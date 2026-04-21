@@ -90,7 +90,7 @@ def run_test(dir: str, train_years: List[int], test_years: List[int], forecast_f
     covs = [
         CovBand(C=estimate_C(entries, p_est), label="Risk Buckets",     color="blue"),
         CovBand(C=estimate_C(entries, None),  label="Conservative",     color="black"),
-        CovBand(C=C3,                         label="True Conservative", color="green"),
+        # CovBand(C=C3,                         label="True Conservative", color="green"),
     ]
     df_stats = calc_L_s2(forecast_data, covs, pA="phat_A", pB="phat_B", Y="Y", grid="game_completed")
     plot_pcb(df_stats, covs, grid="game_completed", L="L", phat_A=phat_A, phat_B=phat_B, save_plot=save_plot)
@@ -98,12 +98,12 @@ def run_test(dir: str, train_years: List[int], test_years: List[int], forecast_f
     return p_val
 
 if __name__ == "__main__":
-    forecast_file = "NFL/test_8/random_forest_model_combined_data.csv"
+    forecast_file = "NFL/test_9/xgboost_model_combined_data.csv"
     dir = "NFL/ML/dataset_interpolated_fixed"
-    combine_csv_files("random_forest_model", "test_8")
+    combine_csv_files("xgboost_model", "test_9")
     train_years = [2021, 2022, 2023]
     test_years = [2024, 2025]
-    save_plot = "NFL/test_8/plot_ESPN_random_forest_model.png"
+    save_plot = "NFL/test_9/plot_ESPN_xgboost_model.png"
     features = ["score_difference", "relative_strength", "end.yardsToEndzone", "end.down", "end.distance"]
-    p_val = run_test(dir, train_years, test_years, forecast_file, features, num_bucketers=50, num_buckets=5, phat_A="ESPN", phat_B="Random Forest", save_plot=save_plot)
+    p_val = run_test(dir, train_years, test_years, forecast_file, features, num_bucketers=50, num_buckets=5, phat_A="ESPN", phat_B="XGBoost", save_plot=save_plot)
     print(p_val)

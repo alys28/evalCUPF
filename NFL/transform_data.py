@@ -7,8 +7,8 @@ import os
 # - phat_b (below)
 
 # Directory containing CSV files
-directory = "test_8/random_forest_model"  # Change this to your actual directory
-phat_B = "random_forest_phat_b"  # Change this to the actual column name for phat_B in your CSV files
+directory = "test_9/xgboost_model"  # Change this to your actual directory
+phat_B = "xgboost_phat_b"  # Change this to the actual column name for phat_B in your CSV files
 
 # Function to process a CSV file
 def process_csv(file_path, phat_A, phat_b, interpolate = False, steps = 0.01):

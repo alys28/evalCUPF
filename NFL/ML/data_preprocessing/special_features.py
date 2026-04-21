@@ -8,7 +8,7 @@ from sklearn.metrics import accuracy_score, r2_score, classification_report
 from xgboost import XGBClassifier
 
 
-def run_inference(df: pd.DataFrame, model, features: list, column_name: str) -> pd.DataFrame:
+def run_inference(df: pd.DataFrame, model, features: list, column_name: str, ev_x_values: list = None) -> pd.DataFrame:
     """
     Runs inference on a DataFrame using only the specified feature columns,
     and returns the DataFrame with predictions appended as a new column.
@@ -21,16 +21,22 @@ def run_inference(df: pd.DataFrame, model, features: list, column_name: str) -> 
         Column names to extract as input features, in the expected order.
     column_name : str
         Name of the new column to add with the predictions.
+    ev_x_values : list of float, optional
+        Representative point values per scoring bucket (e.g. [1, 4, 7]).
+        If provided, adds a `{column_name}_ev` column with expected points.
 
     Returns
     -------
-    pd.DataFrame with an added column `column_name` containing predictions
+    pd.DataFrame with added columns for per-bucket probabilities and optionally expected points.
     """
     df = df.copy()
     X = df[features].astype(float).fillna(0).to_numpy()
     proba = model.predict_proba(X)
+    sign = np.where(df["home_has_possession"].astype(bool), 1, -1)
     for i, bucket in enumerate(SCORE_BUCKET_NAMES):
-        df[f"{column_name}_{bucket}"] = proba[:, i]
+        df[f"{column_name}_{bucket}"] = proba[:, i] * sign
+    if ev_x_values is not None:
+        df[f"{column_name}_ev"] = expected_points(proba, ev_x_values) * sign
     return df
 
 
@@ -132,13 +138,66 @@ def annotate_possessions(data: dict, possession_index: int, score_difference_ind
 
 
 N_SCORE_CLASSES = 3
-SCORE_BUCKET_NAMES = ["prob_0_2pts", "prob_3_6pts", "prob_7plus_pts"]
+SCORE_BUCKET_NAMES = ["prob_0_2pts", "prob_3_5pts", "prob_7plus_pts"]
+
+
+def verify_sanity_check(df: pd.DataFrame, model, features: list, ev_x_values: list, ground_truth: np.ndarray = None, n_samples: int = 10, random_state: int = 42) -> None:
+    """
+    Samples random rows from df and prints feature values, per-bucket probabilities, expected points, and ground truth.
+
+    Parameters
+    ----------
+    ground_truth : np.ndarray of shape (len(df),), optional
+        Raw drive points scored for each row (e.g. the last column of the annotated array).
+        If provided, prints the actual points and bucket alongside predictions.
+    """
+    sample = df.sample(n=min(n_samples, len(df)), random_state=random_state)
+    sample_idx = sample.index.tolist()
+    sample = sample.reset_index(drop=True)
+    X = sample[features].astype(float).fillna(0).to_numpy()
+    proba = model.predict_proba(X)
+    sign = np.where(sample["home_has_possession"].astype(bool), 1, -1)
+    ev = expected_points(proba, ev_x_values) * sign
+
+    bucket_names_display = ["0-2pts", "3-5pts", "7+pts"]
+
+    for i in range(len(sample)):
+        print(f"\n--- Sample {i + 1} ---")
+        for feat in features:
+            print(f"  {feat}: {sample.at[i, feat]}")
+        for j, bucket in enumerate(SCORE_BUCKET_NAMES):
+            print(f"  {bucket}: {proba[i, j] * sign[i]:.4f}")
+        print(f"  expected_points: {ev[i]:.4f}")
+        if ground_truth is not None:
+            actual_pts = ground_truth[sample_idx[i]]
+            actual_bucket = _bucket_labels(np.array([actual_pts]))[0]
+            print(f"  ground_truth_points: {actual_pts:.1f}  (bucket: {bucket_names_display[actual_bucket]})")
+
+
+def expected_points(probabilities: np.ndarray, x_values: list) -> np.ndarray:
+    """
+    Computes expected points as a weighted sum: EV = sum(P(score=x) * x).
+
+    Parameters
+    ----------
+    probabilities : np.ndarray of shape (n_samples, n_classes)
+        Class probabilities from XGBoost's predict_proba(), one column per bucket.
+    x_values : list of float, length n_classes
+        Representative point value for each bucket (e.g. [1, 4, 7]).
+
+    Returns
+    -------
+    np.ndarray of shape (n_samples,)
+        Expected points for each sample.
+    """
+    x = np.array(x_values, dtype=float)
+    return probabilities @ x
 
 
 def _bucket_labels(y: np.ndarray) -> np.ndarray:
-    """0-2 pts -> 0, 3-6 pts -> 1, 7+ pts -> 2"""
+    """0-2 pts -> 0, 3-5 pts -> 1, 6+ pts -> 2"""
     buckets = np.zeros(len(y), dtype=int)
-    buckets[(y >= 3) & (y < 7)] = 1
+    buckets[(y >= 3) & (y < 6)] = 1
     buckets[y >= 7] = 2
     return buckets
 
@@ -146,7 +205,7 @@ def _bucket_labels(y: np.ndarray) -> np.ndarray:
 def train_possession_model(annotated_data: dict, train_years: list):
     """
     Trains an XGBoost classifier on the given years. The last column of each
-    array is the drive points label, bucketed into: 0-2pts, 3-6pts, 7+pts.
+    array is the drive points label, bucketed into: 0-2pts, 3-5pts, 7+pts.
 
     Parameters
     ----------
@@ -237,12 +296,12 @@ def run_linear_regression(X: np.ndarray, y: np.ndarray, test_size: float = 0.2, 
     return model, metrics
 
 
-def _infer_and_save(fpath: str, model, features: list, prediction_column: str) -> bool:
+def _infer_and_save(fpath: str, model, features: list, prediction_column: str, ev_x_values: list = None) -> bool:
     full_df = pd.read_csv(fpath)
     skipped_row = full_df.iloc[[0]]       # preserve the first data row
     df = full_df.iloc[1:].reset_index(drop=True)
     had_nan = df[features].astype(float).isna().any().any()
-    df = run_inference(df, model, features, prediction_column)
+    df = run_inference(df, model, features, prediction_column, ev_x_values)
     # re-attach the skipped row (prediction columns will be NaN for it)
     result = pd.concat([skipped_row, df], ignore_index=True)
     result.to_csv(fpath, index=False)
@@ -250,14 +309,14 @@ def _infer_and_save(fpath: str, model, features: list, prediction_column: str) -
 
 
 def _run_inference_on_year(args):
-    directory, year, model, features, prediction_column = args
+    directory, year, model, features, prediction_column, ev_x_values = args
     year_dir = os.path.join(directory, str(year))
     if not os.path.isdir(year_dir):
         return year, 0, 0
     csv_files = sorted(f for f in os.listdir(year_dir) if f.endswith(".csv"))
     nan_file_count = 0
     with ThreadPoolExecutor() as io_pool:
-        futures = [io_pool.submit(_infer_and_save, os.path.join(year_dir, f), model, features, prediction_column) for f in csv_files]
+        futures = [io_pool.submit(_infer_and_save, os.path.join(year_dir, f), model, features, prediction_column, ev_x_values) for f in csv_files]
         for fut in as_completed(futures):
             if fut.result():
                 nan_file_count += 1
@@ -266,14 +325,14 @@ def _run_inference_on_year(args):
 
 
 def _loo_train_and_infer(args):
-    directory, year, train_years, annotated, features, prediction_column = args
+    directory, year, train_years, annotated, features, prediction_column, ev_x_values = args
     if year not in annotated:
         return year, None, None, 0
     other_train_years = [y for y in train_years if y != year and y in annotated]
     if not other_train_years:
         return year, None, None, 0
     model, metrics = train_possession_model(annotated, other_train_years)
-    _, n_files, _ = _run_inference_on_year((directory, year, model, features, prediction_column))
+    _, n_files, _ = _run_inference_on_year((directory, year, model, features, prediction_column, ev_x_values))
     return year, other_train_years, metrics, n_files
 
 
@@ -285,6 +344,7 @@ def run_pipeline(
     possession_index: int,
     score_difference_index: int,
     prediction_column: str = "predicted_drive_points",
+    ev_x_values: list = None,
 ):
     """
     Full pipeline:
@@ -311,6 +371,9 @@ def run_pipeline(
         Index into `features` for the score difference column.
     prediction_column : str
         Name of the new column written to each CSV.
+    ev_x_values : list of float, optional
+        Representative point values per scoring bucket (e.g. [1, 4, 7]).
+        If provided, writes a `{prediction_column}_ev` column to each CSV.
     """
     # --- Load and annotate all train years ---
     print(f"[1/4] Loading dataset from: {directory}")
@@ -325,7 +388,7 @@ def run_pipeline(
     # --- Leave-one-out inference on train years (parallel across years) ---
     print(f"[3/4] Leave-one-out inference on train years: {train_years}")
     with ProcessPoolExecutor() as pool:
-        futures = {pool.submit(_loo_train_and_infer, (directory, year, train_years, annotated, features, prediction_column)): year for year in train_years}
+        futures = {pool.submit(_loo_train_and_infer, (directory, year, train_years, annotated, features, prediction_column, ev_x_values)): year for year in train_years}
         for fut in as_completed(futures):
             year, trained_on, metrics, n_files = fut.result()
             if metrics is None:
@@ -340,7 +403,7 @@ def run_pipeline(
 
     print(f"      Running inference on test years: {test_years}")
     with ProcessPoolExecutor() as pool:
-        futures = {pool.submit(_run_inference_on_year, (directory, year, model, features, prediction_column)): year for year in test_years}
+        futures = {pool.submit(_run_inference_on_year, (directory, year, model, features, prediction_column, ev_x_values)): year for year in test_years}
         for fut in as_completed(futures):
             year, n_files, _ = fut.result()
             if n_files == 0:
@@ -358,13 +421,29 @@ if __name__ == "__main__":
     FEATURES = ["game_completed", "relative_strength", "score_difference", "home_has_possession", "end.down", "end.distance", "end.yardsToEndzone",  "home_timeouts_left", "away_timeouts_left"]
     POSSESSION_INDEX = FEATURES.index("home_has_possession")
     SCORE_DIFFERENCE_INDEX = FEATURES.index("score_difference")
+    EXPECTED_POINTS_X_VALUES = [0, 3, 6]  # representative points for the 0-2, 3-5, and 7+ buckets
 
-    run_pipeline(
-        directory=DIRECTORY,
-        train_years=TRAIN_YEARS,
-        test_years=TEST_YEARS,
-        features=FEATURES,
-        possession_index=POSSESSION_INDEX,
-        score_difference_index=SCORE_DIFFERENCE_INDEX,
-        prediction_column="predicted_drive_points",
-    )
+    # run_pipeline(
+    #     directory=DIRECTORY,
+    #     train_years=TRAIN_YEARS,
+    #     test_years=TEST_YEARS,
+    #     features=FEATURES,
+    #     possession_index=POSSESSION_INDEX,
+    #     score_difference_index=SCORE_DIFFERENCE_INDEX,
+    #     prediction_column="predicted_drive_points",
+    #     ev_x_values=EXPECTED_POINTS_X_VALUES,
+    # )
+
+    print("\n[Sanity Check] Training model on all train years for verification ...")
+    all_data = load_dataset(DIRECTORY, FEATURES)
+    all_data = {y: all_data[y] for y in TRAIN_YEARS if y in all_data}
+    annotated = annotate_possessions(all_data, POSSESSION_INDEX, SCORE_DIFFERENCE_INDEX)
+    model, _ = train_possession_model(annotated, list(annotated.keys()))
+
+    sample_year = TRAIN_YEARS[-1]
+    sample_year_dir = os.path.join(DIRECTORY, str(sample_year))
+    sample_csv = sorted(f for f in os.listdir(sample_year_dir) if f.endswith(".csv"))[0]
+    sample_df = pd.read_csv(os.path.join(sample_year_dir, sample_csv), skiprows=[1])
+    sample_ground_truth = annotated[sample_year][:len(sample_df), -1]
+
+    verify_sanity_check(sample_df, model, FEATURES, ev_x_values=EXPECTED_POINTS_X_VALUES, ground_truth=sample_ground_truth, n_samples=25)
