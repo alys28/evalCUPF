@@ -3,9 +3,11 @@ import numpy as np
 import pandas as pd
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from sklearn.linear_model import LogisticRegression, LinearRegression
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, r2_score, classification_report
 from xgboost import XGBClassifier
+from imblearn.over_sampling import SMOTE
 
 
 def run_inference(df: pd.DataFrame, model, features: list, column_name: str, ev_x_values: list = None) -> pd.DataFrame:
@@ -138,7 +140,7 @@ def annotate_possessions(data: dict, possession_index: int, score_difference_ind
 
 
 N_SCORE_CLASSES = 3
-SCORE_BUCKET_NAMES = ["prob_0_2pts", "prob_3_5pts", "prob_7plus_pts"]
+SCORE_BUCKET_NAMES = ["prob_0_2pts", "prob_3_5pts", "prob_6plus_pts"]
 
 
 def verify_sanity_check(df: pd.DataFrame, model, features: list, ev_x_values: list, ground_truth: np.ndarray = None, n_samples: int = 10, random_state: int = 42) -> None:
@@ -159,8 +161,6 @@ def verify_sanity_check(df: pd.DataFrame, model, features: list, ev_x_values: li
     sign = np.where(sample["home_has_possession"].astype(bool), 1, -1)
     ev = expected_points(proba, ev_x_values) * sign
 
-    bucket_names_display = ["0-2pts", "3-5pts", "7+pts"]
-
     for i in range(len(sample)):
         print(f"\n--- Sample {i + 1} ---")
         for feat in features:
@@ -170,8 +170,8 @@ def verify_sanity_check(df: pd.DataFrame, model, features: list, ev_x_values: li
         print(f"  expected_points: {ev[i]:.4f}")
         if ground_truth is not None:
             actual_pts = ground_truth[sample_idx[i]]
-            actual_bucket = _bucket_labels(np.array([actual_pts]))[0]
-            print(f"  ground_truth_points: {actual_pts:.1f}  (bucket: {bucket_names_display[actual_bucket]})")
+            actual_bucket = _bucket_labels(np.array([abs(actual_pts)]))[0]
+            print(f"  ground_truth_points: {actual_pts:.1f}  (bucket: {SCORE_BUCKET_NAMES[actual_bucket]})")
 
 
 def expected_points(probabilities: np.ndarray, x_values: list) -> np.ndarray:
@@ -198,14 +198,14 @@ def _bucket_labels(y: np.ndarray) -> np.ndarray:
     """0-2 pts -> 0, 3-5 pts -> 1, 6+ pts -> 2"""
     buckets = np.zeros(len(y), dtype=int)
     buckets[(y >= 3) & (y < 6)] = 1
-    buckets[y >= 7] = 2
+    buckets[y >= 6] = 2
     return buckets
 
 
-def train_possession_model(annotated_data: dict, train_years: list):
+def train_possession_model(annotated_data: dict, train_years: list, model_type: str = "xgboost", use_smote: bool = False, use_sample_weights: bool = True):
     """
-    Trains an XGBoost classifier on the given years. The last column of each
-    array is the drive points label, bucketed into: 0-2pts, 3-5pts, 7+pts.
+    Trains a classifier on the given years. The last column of each
+    array is the drive points label, bucketed into: 0-2pts, 3-5pts, 6+pts.
 
     Parameters
     ----------
@@ -213,10 +213,18 @@ def train_possession_model(annotated_data: dict, train_years: list):
         Output of annotate_possessions.
     train_years : list of int
         Years to include in training.
+    model_type : str
+        One of "xgboost" or "random_forest".
+    use_smote : bool
+        If True, applies SMOTE to oversample minority classes before training.
+        Overrides sample weights (sets them all to 1) since classes are already balanced.
+    use_sample_weights : bool
+        If True, applies inverse-frequency sample weights to penalize majority class.
+        Ignored when use_smote=True.
 
     Returns
     -------
-    model : fitted XGBClassifier
+    model : fitted classifier
     metrics : dict with 'train_accuracy', 'test_accuracy', and 'report'
     """
     arrays = [annotated_data[y] for y in train_years if y in annotated_data]
@@ -231,10 +239,32 @@ def train_possession_model(annotated_data: dict, train_years: list):
     X = combined[:, :-1]
     y = _bucket_labels(combined[:, -1])
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    model = XGBClassifier(n_estimators=200, max_depth=6, learning_rate=0.1,
-                          eval_metric="mlogloss", random_state=42)
-    model.fit(X_train, y_train)
+    counts = np.bincount(y, minlength=N_SCORE_CLASSES)
+    print(f"      Label distribution: { {name: int(c) for name, c in zip(SCORE_BUCKET_NAMES, counts)} }")
+
+    if use_sample_weights and not use_smote:
+        sample_weights = np.array([1.0 / counts[label] for label in y])
+        sample_weights /= sample_weights.mean()
+    else:
+        sample_weights = np.ones(len(y))
+
+    X_train, X_test, y_train, y_test, w_train, _ = train_test_split(X, y, sample_weights, test_size=0.2, random_state=42)
+
+    if use_smote:
+        X_train, y_train = SMOTE(random_state=42).fit_resample(X_train, y_train)
+        w_train = np.ones(len(y_train))
+        resampled_counts = np.bincount(y_train, minlength=N_SCORE_CLASSES)
+        print(f"      After SMOTE: { {name: int(c) for name, c in zip(SCORE_BUCKET_NAMES, resampled_counts)} }")
+
+    if model_type == "random_forest":
+        model = RandomForestClassifier(n_estimators=200, max_depth=6, random_state=42)
+        model.fit(X_train, y_train, sample_weight=w_train)
+    elif model_type == "xgboost":
+        model = XGBClassifier(n_estimators=200, max_depth=6, learning_rate=0.1,
+                              eval_metric="mlogloss", random_state=42)
+        model.fit(X_train, y_train, sample_weight=w_train)
+    else:
+        raise ValueError(f"Unknown model_type '{model_type}'. Choose 'xgboost' or 'random_forest'.")
     metrics = {
         "train_accuracy": accuracy_score(y_train, model.predict(X_train)),
         "test_accuracy": accuracy_score(y_test, model.predict(X_test)),
@@ -325,13 +355,13 @@ def _run_inference_on_year(args):
 
 
 def _loo_train_and_infer(args):
-    directory, year, train_years, annotated, features, prediction_column, ev_x_values = args
+    directory, year, train_years, annotated, features, prediction_column, ev_x_values, model_type, use_smote, use_sample_weights = args
     if year not in annotated:
         return year, None, None, 0
     other_train_years = [y for y in train_years if y != year and y in annotated]
     if not other_train_years:
         return year, None, None, 0
-    model, metrics = train_possession_model(annotated, other_train_years)
+    model, metrics = train_possession_model(annotated, other_train_years, model_type, use_smote, use_sample_weights)
     _, n_files, _ = _run_inference_on_year((directory, year, model, features, prediction_column, ev_x_values))
     return year, other_train_years, metrics, n_files
 
@@ -345,6 +375,9 @@ def run_pipeline(
     score_difference_index: int,
     prediction_column: str = "predicted_drive_points",
     ev_x_values: list = None,
+    model_type: str = "xgboost",
+    use_smote: bool = False,
+    use_sample_weights: bool = True,
 ):
     """
     Full pipeline:
@@ -374,6 +407,10 @@ def run_pipeline(
     ev_x_values : list of float, optional
         Representative point values per scoring bucket (e.g. [1, 4, 7]).
         If provided, writes a `{prediction_column}_ev` column to each CSV.
+    model_type : str
+        One of "xgboost" or "random_forest".
+    use_smote : bool
+        If True, applies SMOTE to oversample minority classes before training.
     """
     # --- Load and annotate all train years ---
     print(f"[1/4] Loading dataset from: {directory}")
@@ -388,7 +425,7 @@ def run_pipeline(
     # --- Leave-one-out inference on train years (parallel across years) ---
     print(f"[3/4] Leave-one-out inference on train years: {train_years}")
     with ProcessPoolExecutor() as pool:
-        futures = {pool.submit(_loo_train_and_infer, (directory, year, train_years, annotated, features, prediction_column, ev_x_values)): year for year in train_years}
+        futures = {pool.submit(_loo_train_and_infer, (directory, year, train_years, annotated, features, prediction_column, ev_x_values, model_type, use_smote, use_sample_weights)): year for year in train_years}
         for fut in as_completed(futures):
             year, trained_on, metrics, n_files = fut.result()
             if metrics is None:
@@ -398,7 +435,7 @@ def run_pipeline(
 
     # --- Train on all train years, run inference on test years (parallel across years) ---
     print(f"[4/4] Training final model on all train years: {sorted(annotated.keys())} ...")
-    model, metrics = train_possession_model(annotated, list(annotated.keys()))
+    model, metrics = train_possession_model(annotated, list(annotated.keys()), model_type, use_smote, use_sample_weights)
     print(f"      train_acc={metrics['train_accuracy']:.4f} | test_acc={metrics['test_accuracy']:.4f}\n{metrics['report']}")
 
     print(f"      Running inference on test years: {test_years}")
@@ -421,8 +458,7 @@ if __name__ == "__main__":
     FEATURES = ["game_completed", "relative_strength", "score_difference", "home_has_possession", "end.down", "end.distance", "end.yardsToEndzone",  "home_timeouts_left", "away_timeouts_left"]
     POSSESSION_INDEX = FEATURES.index("home_has_possession")
     SCORE_DIFFERENCE_INDEX = FEATURES.index("score_difference")
-    EXPECTED_POINTS_X_VALUES = [0, 3, 6]  # representative points for the 0-2, 3-5, and 7+ buckets
-
+    EXPECTED_POINTS_X_VALUES = [0, 3, 6]  # representative points for the 0-2, 3-5, and 6+ buckets
     # run_pipeline(
     #     directory=DIRECTORY,
     #     train_years=TRAIN_YEARS,
@@ -432,13 +468,19 @@ if __name__ == "__main__":
     #     score_difference_index=SCORE_DIFFERENCE_INDEX,
     #     prediction_column="predicted_drive_points",
     #     ev_x_values=EXPECTED_POINTS_X_VALUES,
+    #     model_type="xgboost",
+    #     use_smote=False,
+    #     use_sample_weights=True,
     # )
 
     print("\n[Sanity Check] Training model on all train years for verification ...")
     all_data = load_dataset(DIRECTORY, FEATURES)
     all_data = {y: all_data[y] for y in TRAIN_YEARS if y in all_data}
     annotated = annotate_possessions(all_data, POSSESSION_INDEX, SCORE_DIFFERENCE_INDEX)
-    model, _ = train_possession_model(annotated, list(annotated.keys()))
+    USE_SMOTE = False
+    USE_SAMPLE_WEIGHTS = True
+    MODEL_TYPE = "xgboost"
+    model, _ = train_possession_model(annotated, list(annotated.keys()), model_type=MODEL_TYPE, use_smote=USE_SMOTE, use_sample_weights=USE_SAMPLE_WEIGHTS)
 
     sample_year = TRAIN_YEARS[-1]
     sample_year_dir = os.path.join(DIRECTORY, str(sample_year))

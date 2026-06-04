@@ -115,14 +115,16 @@ class BaseDirectClassifier(ABC):
         - patience: int for early stopping
         """
         pass
-    # def _get_model_config(self):
+
+    @abstractmethod
+    def _get_model_config(self):
         """
         Extract model configuration for saving.
         Should return a dict with model architecture parameters.
         """
         pass
-    
-    # @abstractmethod
+
+    @abstractmethod
     def _recreate_model_from_config(self, model_config):
         """
         Recreate model instance from saved configuration.
@@ -261,35 +263,33 @@ class BaseDirectClassifier(ABC):
         total_loss = 0
         correct = 0
         total_samples = 0
-        
+        evaluated_batches = 0
+
         with torch.no_grad():
             for x, y in data_loader:
                 x, y = x.to(self.device), y.to(self.device)
-                
-                # Skip batch if inputs contain NaN
+
                 if torch.isnan(x).any() or torch.isnan(y).any():
                     continue
-                    
+
                 output = self.model(x).squeeze(-1)
-                
-                # Skip batch if outputs contain NaN
+
                 if torch.isnan(output).any():
                     continue
-                    
+
                 loss = self.criterion(output, y)
-                
-                # Skip batch if loss is NaN
+
                 if torch.isnan(loss):
                     continue
-                    
+
                 total_loss += loss.item()
-                
-                # Calculate accuracy
+                evaluated_batches += 1
+
                 predictions = (output > 0.5).float()
                 correct += (predictions == y).float().sum().item()
                 total_samples += len(predictions)
-        
-        avg_loss = total_loss / len(data_loader) if len(data_loader) > 0 else float('inf')
+
+        avg_loss = total_loss / evaluated_batches if evaluated_batches > 0 else float('inf')
         accuracy = correct / total_samples if total_samples > 0 else 0.0
         return avg_loss, accuracy
     
@@ -378,8 +378,7 @@ class BaseDirectClassifier(ABC):
         preds = self.predict_proba(X)
         return preds[:, 1]
     @classmethod
-    # @abstractmethod
-    def load_model(self, cls, filepath, device=None):
+    def load_model(cls, filepath, device=None):
         """
         Load a saved model. Must be implemented by subclasses.
         """

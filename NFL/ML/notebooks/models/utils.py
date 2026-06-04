@@ -20,8 +20,8 @@ def SHAP_analysis_timestep(models, timestep, training_data, test_data, plot = Tr
 def SHAP_analysis(models, training_data, test_data, save_name,
                   save_dir=None, timesteps_size=0.005, num_threads=5):
     """
-    Compute SHAP for each timestep and save outputs, skipping timesteps
-    that already have a saved file.
+    Compute SHAP for a subset of timesteps and save outputs, skipping
+    timesteps that already have a saved file.
 
     Args:
         models: dict mapping timestep -> model
@@ -29,8 +29,9 @@ def SHAP_analysis(models, training_data, test_data, save_name,
         test_data: ...
         save_name: base name for files (without extension)
         save_dir: optional directory to save into. If None, uses CWD.
-        timesteps_size: spacing between timesteps (not strictly required
-                        here, but kept for consistency / future use)
+        timesteps_size: fraction of total timesteps to sample, or an int
+                        specifying the exact number of timesteps to run.
+                        E.g. 0.1 runs 10% of timesteps, 20 runs 20 timesteps.
         num_threads: max number of threads for parallel execution
     """
     # Decide where to save
@@ -42,7 +43,6 @@ def SHAP_analysis(models, training_data, test_data, save_name,
     existing_timestep_strings = set()
     for fname in os.listdir(base_dir):
         if fname.startswith(save_name + "_") and fname.endswith(".npz"):
-            # Extract the part between "<save_name>_" and ".npz"
             ts_str = fname[len(save_name) + 1 : -4]
             existing_timestep_strings.add(ts_str)
 
@@ -55,19 +55,33 @@ def SHAP_analysis(models, training_data, test_data, save_name,
         save_SHAP_output(shap_output, full_path)
         print(f"Saved {filename}.npz")
 
+    all_timesteps = sorted(models.keys())
+
+    # Select a evenly-spaced subset based on timesteps_size
+    n = len(all_timesteps)
+    if isinstance(timesteps_size, float) and 0.0 < timesteps_size <= 1.0:
+        num_to_select = max(1, round(n * timesteps_size))
+    elif isinstance(timesteps_size, int) and timesteps_size > 0:
+        num_to_select = min(timesteps_size, n)
+    else:
+        num_to_select = n
+
+    indices = np.linspace(0, n - 1, num_to_select, dtype=int)
+    selected_timesteps = [all_timesteps[i] for i in indices]
+
     # Determine which timesteps still need to be processed
-    all_timesteps = list(models.keys())
     timesteps_to_run = [
-        t for t in all_timesteps
+        t for t in selected_timesteps
         if str(t) not in existing_timestep_strings
     ]
 
     if not timesteps_to_run:
-        print("All timesteps already processed. Nothing to do.")
+        print("All selected timesteps already processed. Nothing to do.")
         return
 
     print(f"Processing {len(timesteps_to_run)} timesteps "
-          f"(skipping {len(all_timesteps) - len(timesteps_to_run)} already done).")
+          f"(skipping {len(selected_timesteps) - len(timesteps_to_run)} already done, "
+          f"{n - len(selected_timesteps)} not selected).")
 
     # Run remaining timesteps in parallel
     with ThreadPoolExecutor(max_workers=num_threads) as executor:

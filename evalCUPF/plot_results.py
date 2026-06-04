@@ -50,15 +50,19 @@ def calc_L_s2(
     )
 
     # Extract diagonal of each covariance matrix into its own column
-    grid_vals = np.unique(df[grid])
+    # Use the grouped grid values (from L_df) to ensure length matches np.diag(C)
+    grid_vals = L_df[grid].values
     sigma2_data = {grid: grid_vals}
     for cov in covs:
         col = f"sigma2_{cov.label}"
         C = cov.C
-        if isinstance(C, pd.DataFrame):
-            sigma2_data[col] = np.diag(C.values)
-        else:
-            sigma2_data[col] = np.diag(C)
+        diag = np.diag(C.values) if isinstance(C, pd.DataFrame) else np.diag(C)
+        if len(diag) != len(grid_vals):
+            raise ValueError(
+                f"Covariance matrix diagonal length ({len(diag)}) does not match "
+                f"number of unique grid values ({len(grid_vals)}) for '{cov.label}'."
+            )
+        sigma2_data[col] = diag
     sigma2_df = pd.DataFrame(sigma2_data)
 
     # Merge everything

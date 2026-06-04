@@ -1,0 +1,3 @@
+Using the possession term extra (view NFL/ML/data_preprocessing/special_features.py)
+- Using Expected value of points scored instead of possession values
+- Negative points when away team has possession

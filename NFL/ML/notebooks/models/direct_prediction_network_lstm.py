@@ -5,6 +5,8 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from sklearn.model_selection import train_test_split
 import os
+import optuna
+import logging
 from .DL_Model import BaseDirectClassifier, NFLDirectDataset
 
 # Custom Brier Score Loss Function
@@ -102,11 +104,33 @@ class DirectPredictionLSTM(nn.Module):
         return output
 
 class DirectLSTMClassifier(BaseDirectClassifier):
-    def __init__(self, model, epochs, optimizer, criterion, device, features, scheduler=None, use_scaler=True):
+    def __init__(self, model, epochs, optimizer, criterion, device, features, scheduler=None, use_scaler=True,
+                 optimize_hyperparams=False, n_trials=30, optimization_epochs=None):
         """
-        Direct prediction LSTM classifier
+        Direct prediction LSTM classifier with optional Optuna hyperparameter optimization
+
+        Args:
+            model: DirectPredictionLSTM model
+            epochs: Number of training epochs
+            optimizer: PyTorch optimizer
+            criterion: Loss function
+            device: PyTorch device
+            features: list of features (string), ordered with the data
+            scheduler: Learning rate scheduler (optional)
+            use_scaler: Whether to use feature scaling
+            optimize_hyperparams: Whether to run Optuna optimization
+            n_trials: Number of Optuna trials (if optimization enabled)
+            optimization_epochs: Epochs per trial (if None, uses epochs//2)
         """
         super().__init__(model, epochs, optimizer, criterion, device, features, scheduler, use_scaler)
+
+        self.optimize_hyperparams = optimize_hyperparams
+        self.n_trials = n_trials
+        self.optimization_epochs = optimization_epochs if optimization_epochs else max(epochs // 2, 10)
+
+        self.optimization_results = None
+        self.best_hyperparams = None
+        self.optuna_study = None
     
     def _prepare_data_for_scaling(self, X):
         """Prepare data for scaling - flatten for LSTM"""
@@ -165,7 +189,118 @@ class DirectLSTMClassifier(BaseDirectClassifier):
     def _get_model_type_name(self):
         """Get model type name"""
         return 'lstm'
-    
+
+    def fit(self, X, y, val_X=None, val_y=None, batch_size=32, verbose=True):
+        """
+        Train the LSTM model with optional Optuna hyperparameter optimization.
+        """
+        X_scaled = self._apply_scaling(X, fit=True)
+        val_X_scaled = self._apply_scaling(val_X, fit=False) if val_X is not None else None
+
+        if self.optimize_hyperparams and val_X_scaled is not None and val_y is not None:
+            print("Running LSTM hyperparameter optimization...")
+            best_params, best_value = self._run_hyperparameter_optimization(
+                X_scaled, y, val_X_scaled, val_y
+            )
+
+            self.model = DirectPredictionLSTM(
+                input_dim=X_scaled.shape[-1],
+                hidden_size=best_params['hidden_size'],
+                num_layers=best_params['num_layers'],
+                dropout_rate=best_params['dropout_rate'],
+                bidirectional=best_params['bidirectional'],
+            ).to(self.device)
+
+            self.optimizer = torch.optim.AdamW(
+                self.model.parameters(),
+                lr=best_params['learning_rate'],
+                weight_decay=best_params['weight_decay'],
+            )
+            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer, mode='min', factor=0.7, patience=5
+            )
+            batch_size = best_params['batch_size']
+
+            if verbose:
+                print(f"LSTM recreated with optimized parameters. Best val loss: {best_value:.4f}")
+
+        super().fit(X, y, val_X=val_X, val_y=val_y, batch_size=batch_size, verbose=verbose)
+
+    def _optuna_objective(self, trial, X_train, y_train, X_val, y_val, input_dim):
+        """Optuna objective function for LSTM hyperparameter optimization."""
+        learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
+        dropout_rate = trial.suggest_float('dropout_rate', 0.1, 0.6)
+        hidden_size = trial.suggest_categorical('hidden_size', [8, 16, 32, 64, 128])
+        num_layers = trial.suggest_int('num_layers', 1, 3)
+        bidirectional = trial.suggest_categorical('bidirectional', [True, False])
+        weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-1, log=True)
+        batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
+
+        model = DirectPredictionLSTM(
+            input_dim=input_dim,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout_rate=dropout_rate,
+            bidirectional=bidirectional,
+        )
+
+        criterion = nn.BCELoss()
+        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.7, patience=5
+        )
+
+        temp_classifier = DirectLSTMClassifier(
+            model, self.optimization_epochs, optimizer, criterion,
+            self.device, self.features, scheduler, use_scaler=False
+        )
+        temp_classifier.fit(X_train, y_train, val_X=X_val, val_y=y_val, batch_size=batch_size, verbose=False)
+
+        val_loss = temp_classifier.final_val_loss if temp_classifier.final_val_loss is not None else float('inf')
+
+        trial.report(val_loss, step=self.optimization_epochs)
+        if trial.should_prune():
+            raise optuna.exceptions.TrialPruned()
+
+        return val_loss
+
+    def _run_hyperparameter_optimization(self, X, y, val_X, val_y):
+        """Run Optuna hyperparameter optimization for the LSTM."""
+        print(f"Starting LSTM hyperparameter optimization with {self.n_trials} trials...")
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+        study = optuna.create_study(
+            direction='minimize',
+            study_name=f"nfl_lstm_optuna_{id(self)}",
+            pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=10),
+        )
+        study.optimize(
+            lambda trial: self._optuna_objective(trial, X, y, val_X, val_y, X.shape[-1]),
+            n_trials=self.n_trials,
+            show_progress_bar=True,
+        )
+
+        best_params = study.best_params
+        best_value = study.best_value
+
+        print(f"Best val loss: {best_value:.4f}")
+        print(f"Best parameters: {best_params}")
+
+        self.optimization_results = {'best_params': best_params, 'best_value': best_value, 'study': study}
+        self.best_hyperparams = best_params
+        self.optuna_study = study
+
+        return best_params, best_value
+
+    def get_optimization_results(self):
+        return self.optimization_results
+
+    def get_best_hyperparams(self):
+        return self.best_hyperparams
+
+    def get_optuna_study(self):
+        return self.optuna_study
+
     def predict(self, x):
         """
         Make predictions on new data
@@ -301,13 +436,13 @@ class DirectLSTMClassifier(BaseDirectClassifier):
         return classifier
 
 # Example usage and training script
-def setup_direct_lstm_models(training_data, test_data=None, features=[], num_models=20, epochs=30, lr=0.001, 
-                             batch_size=32, hidden_size=16, num_layers=1, bidirectional=False, use_scaler=True, 
-                             save_models=False):
+def setup_direct_lstm_models(training_data, test_data=None, features=[], num_models=20, epochs=30, lr=0.001,
+                             batch_size=32, hidden_size=16, num_layers=1, bidirectional=False, use_scaler=True,
+                             save_models=False, optimize_hyperparams=False, n_trials=30):
     """
     Setup minimal LSTM models to prevent overfitting on tiny datasets
     Uses very lightweight architecture with aggressive regularization
-    
+
     Args:
         training_data: Dictionary with timesteps as keys and training data as values
         test_data: Optional dictionary with test data. If None, training data is split 90/10
@@ -320,7 +455,10 @@ def setup_direct_lstm_models(training_data, test_data=None, features=[], num_mod
         bidirectional: Whether to use bidirectional LSTM (default: False)
         use_scaler: Whether to scale input features (default: True)
         save_models: Whether to save trained models to disk (default: False)
-    
+        optimize_hyperparams: False to disable, True to optimize all models, or a list of model
+            indices (0-based) to optimize only those models (default: False)
+        n_trials: Number of Optuna trials per model (default: 30)
+
     Returns:
         Dictionary of trained minimal LSTM models by timestep range
     """
@@ -399,8 +537,16 @@ def setup_direct_lstm_models(training_data, test_data=None, features=[], num_mod
             optimizer, mode='min', factor=0.7, patience=5
         )
         
+        # Determine whether to run Optuna for this specific model index
+        run_optuna = (
+            optimize_hyperparams is True
+            or (isinstance(optimize_hyperparams, list) and i in optimize_hyperparams)
+        )
+
         # Classifier handles scaling internally
-        classifier = DirectLSTMClassifier(lstm_network, epochs, optimizer, criterion, device, features, scheduler, use_scaler=use_scaler)
+        classifier = DirectLSTMClassifier(lstm_network, epochs, optimizer, criterion, device, features, scheduler,
+                                          use_scaler=use_scaler, optimize_hyperparams=run_optuna,
+                                          n_trials=n_trials)
         
         # Train the model (scaler is handled internally)
         classifier.fit(X_train, y_train, val_X=X_val, val_y=y_val, batch_size=batch_size)

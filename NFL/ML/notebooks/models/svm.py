@@ -78,7 +78,7 @@ class SVMModel(Model):
         
         # Handle validation split
         if val_X is None and val_y is None:
-            X_train, X_val, y_train, y_val = self.split_data(X_proc, y, test_size=0.15, random_state=42, stratify=True)
+            X_train, X_val, y_train, y_val = self.split_data(X_proc, y, test_size=0.15, random_state=42, stratify=False)
         else:
             X_train, y_train = X_proc, y
             X_val, y_val = self.transform_X(val_X), val_y

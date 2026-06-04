@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 
 
-FEATURES = ["relative_strength", "score_difference", "home_has_possession", "end.down", "end.yardsToEndzone", "end.distance", "home_timeouts_left", "away_timeouts_left"]
+FEATURES = ["game_completed", "relative_strength", "score_difference", "home_has_possession", "end.down", "end.distance", "end.yardsToEndzone", "home_timeouts_left", "away_timeouts_left", "predicted_drive_points_ev"]
 
 @dataclass
 class SHAP_Output:
@@ -97,7 +97,7 @@ class SHAP_over_time:
 
 
 if __name__ == "__main__":
-    shap_model_dir = "shap_values/LR"
+    shap_model_dir = "shap_values/LR_possession_ev"
     shap_over_time = SHAP_over_time(FEATURES) 
     for file in os.listdir(shap_model_dir):
         file_dir = os.path.join(shap_model_dir, file)

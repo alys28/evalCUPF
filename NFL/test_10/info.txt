@@ -1,0 +1,3 @@
+Using the possession term extra (view NFL/ML/data_preprocessing/special_features.py)
+- Better calibrated XGBoost model for points scored probabilities
+- Negative probabilities when away team has possession
