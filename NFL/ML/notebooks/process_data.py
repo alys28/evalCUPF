@@ -565,7 +565,7 @@ def plot_loss(models, test_data, title=""):
     plt.grid(True)
     plt.tight_layout()
     plt.show()
-
+    print(losses)
     return {"timesteps": seen, "losses": np.array(losses), "brier_scores": np.array(brier_scores)}
 # Keep the original plot function for backward compatibility
 def plot(models, tests, title=""):

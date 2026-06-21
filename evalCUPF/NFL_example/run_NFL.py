@@ -101,13 +101,13 @@ def run_test(dir: str, train_years: List[int], test_years: List[int], forecast_f
     return p_val
 
 if __name__ == "__main__":
-    forecast_file = "NFL/test_final/ensemble_model_combined_data.csv"
+    forecast_file = "NFL/test_final/xgboost_model_combined_data.csv"
     dir = "NFL/ML/dataset_interpolated_fixed"
-    combine_csv_files("ensemble_model", "test_final")
+    combine_csv_files("xgboost_model", "test_final")
     train_years = [2021, 2022, 2023]
     test_years = [2024, 2025]
-    save_plot = "NFL/test_final/plot_ensemble_model.png"
-    save_p_val = "NFL/test_final/p_val_ensemble_model.txt"
+    save_plot = "NFL/test_final/plot_xgboost_model.png"
+    save_p_val = "NFL/test_final/p_val_xgboost_model.txt"
     features = ["score_difference", "relative_strength", "end.yardsToEndzone", "end.down", "end.distance"]
-    p_val = run_test(dir, train_years, test_years, forecast_file, features, num_bucketers=50, num_buckets=5, phat_A="ESPN", phat_B="Ensemble model", save_plot=save_plot, save_p_val=save_p_val)
+    p_val = run_test(dir, train_years, test_years, forecast_file, features, num_bucketers=50, num_buckets=5, phat_A="ESPN", phat_B="XGBoost", save_plot=save_plot, save_p_val=save_p_val)
     print(p_val)

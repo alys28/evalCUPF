@@ -1,74 +1,36 @@
-import xgboost as xgb
-from sklearn.model_selection import train_test_split
-from sklearn.isotonic import IsotonicRegression
+from tabpfn import TabPFNClassifier
 import numpy as np
-import optuna
 from .Model import Model
 
 
-class XGBoost(Model):
+class TabPFN(Model):
     def __init__(self, use_calibration=True, optimize_hyperparams=False, n_trials=50,
                  numeric_features=None, other_features=None, all_features=None, **kwargs):
         super().__init__(use_calibration=use_calibration, optimize_hyperparams=optimize_hyperparams,
                          numeric_features=numeric_features, other_features=other_features,
                          all_features=all_features)
         self.params = {
-            'objective': 'binary:logistic',
-            'eval_metric': 'logloss',
-            'max_depth': 4,
-            'eta': 0.015,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'alpha': 1.0,
-            'lambda': 1.0,
-            'min_child_weight': 50,
-            'gamma': 0.5,
-            'max_bin': 255,
-            'seed': 42,
-            'nthread': -1,
-            'verbosity': 0,
+            'n_estimators': 32,
+            'device': 'cpu',
         }
         self.params.update(kwargs)
-        self.num_boost_round = 2000
         self.n_trials = n_trials
         self.best_params = None
 
     def _define_search_space(self, trial):
-        """Define the hyperparameter search space for Bayesian optimization."""
         return {
-            'max_depth': trial.suggest_int('max_depth', 3, 8),
-            'eta': trial.suggest_float('eta', 0.005, 0.1, log=True),
-            'subsample': trial.suggest_float('subsample', 0.6, 1.0),
-            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
-            'alpha': trial.suggest_float('alpha', 1e-8, 10.0, log=True),
-            'lambda': trial.suggest_float('lambda', 1e-1, 10.0, log=True),
-            'min_child_weight': trial.suggest_int('min_child_weight', 10, 100),
-            'gamma': trial.suggest_float('gamma', 0.0, 5.0),
+            'n_estimators': trial.suggest_int('n_estimators', 4, 64),
         }
 
     def _fixed_params(self):
         return {
-            'objective': 'binary:logistic',
-            'eval_metric': 'logloss',
-            'seed': 42,
-            'nthread': -1,
-            'verbosity': 0,
+            'device': 'cpu',
         }
 
     def _train_model(self, X_train, y_train, X_val, y_val, params):
-        dtrain = xgb.DMatrix(X_train, label=y_train)
-        dval = xgb.DMatrix(X_val, label=y_val)
-
-        model = xgb.train(
-            params,
-            dtrain,
-            num_boost_round=self.num_boost_round,
-            evals=[(dval, 'val')],
-            verbose_eval=False,
-            callbacks=[xgb.callback.EarlyStopping(rounds=30, save_best=True)],
-        )
-
-        probs = model.predict(dval, iteration_range=(0, model.best_iteration + 1))
+        model = TabPFNClassifier(**params)
+        model.fit(X_train, y_train)
+        probs = model.predict_proba(X_val)[:, 1]
         return float(np.mean((probs - y_val) ** 2))
 
     def fit(self, X, y, val_X=None, val_y=None):
@@ -84,21 +46,13 @@ class XGBoost(Model):
         if self.optimize_hyperparams:
             best = self.optimize_hyperparameters(X_train_proc, y_train, X_val_proc, y_val, n_trials=self.n_trials)
             self.params.update(best)
+            self.params.update(self._fixed_params())
 
-        dtrain = xgb.DMatrix(X_train_proc, label=y_train)
-        dval = xgb.DMatrix(X_val_proc, label=y_val)
-
-        self.model = xgb.train(
-            self.params,
-            dtrain,
-            num_boost_round=self.num_boost_round,
-            evals=[(dval, 'val')],
-            verbose_eval=False,
-            callbacks=[xgb.callback.EarlyStopping(rounds=30, save_best=True)],
-        )
+        self.model = TabPFNClassifier(**self.params)
+        self.model.fit(X_train_proc, y_train)
 
         if self.use_calibration:
-            probs_cal = self.model.predict(dval, iteration_range=(0, self.model.best_iteration + 1))
+            probs_cal = self.model.predict_proba(X_val_proc)[:, 1]
             self.fit_calibrator(probs_cal, y_val)
 
         y_pred = self.predict_proba(X_train)[:, 1]
@@ -115,30 +69,27 @@ class XGBoost(Model):
         if self.model is None:
             raise ValueError("Model must be fitted before making predictions")
         X_proc = self.transform_X(X)
-        dmat = xgb.DMatrix(X_proc)
-        probs = self.model.predict(dmat, iteration_range=(0, self.model.best_iteration + 1))
+        probs = self.model.predict_proba(X_proc)[:, 1]
         calibrated = self.apply_calibration(probs)
         return np.column_stack([1 - calibrated, calibrated])
 
     def score(self, X, y):
-        """Return accuracy score."""
         predictions = self.predict(X)
         return np.mean(predictions == y)
 
 
-def setup_xgboost_models(training_data, validation_data, numeric_features=None, other_features=None,
-                         all_features=None, use_calibration=True, optimize_hyperparams=False,
-                         n_trials=50, num_models=None):
+def setup_tabpfn_models(training_data, validation_data, numeric_features=None, other_features=None,
+                        all_features=None, use_calibration=True, optimize_hyperparams=False,
+                        n_trials=50, num_models=None):
     """
-    Setup XGBoost models with optional Bayesian optimization.
+    Setup TabPFN models for each timestep.
 
     Args:
         training_data: Dictionary with timestep keys and training data
         validation_data: Dictionary with timestep keys and validation data
         optimize_hyperparams: Whether to perform Bayesian optimization
         n_trials: Number of optimization trials (only used if optimize_hyperparams=True)
-        num_models: Number of evenly spaced models to train (must divide 1.0 into
-                    timesteps that exist in training_data). If None, uses all timesteps.
+        num_models: Number of evenly spaced models to train. If None, uses all timesteps.
     """
     all_timesteps = sorted(training_data.keys())
     models = {}
@@ -150,7 +101,7 @@ def setup_xgboost_models(training_data, validation_data, numeric_features=None, 
         if validation_data:
             X_val = np.concatenate([np.array([row["rows"].reshape(-1) for row in validation_data[t]]) for t in all_timesteps])
             y_val = np.concatenate([np.array([row["label"] for row in validation_data[t]]) for t in all_timesteps])
-        model = XGBoost(
+        model = TabPFN(
             use_calibration=use_calibration,
             optimize_hyperparams=optimize_hyperparams,
             n_trials=n_trials,
@@ -191,7 +142,7 @@ def setup_xgboost_models(training_data, validation_data, numeric_features=None, 
             y_val = np.array([row["label"] for row in validation_data[timestep]])
             X_val = np.array([row["rows"].reshape(-1) for row in validation_data[timestep]])
 
-        model = XGBoost(
+        model = TabPFN(
             use_calibration=use_calibration,
             optimize_hyperparams=optimize_hyperparams,
             n_trials=n_trials,
@@ -199,7 +150,7 @@ def setup_xgboost_models(training_data, validation_data, numeric_features=None, 
             other_features=other_features,
             all_features=all_features
         )
-        opt_info = (f" (Optimized)" if optimize_hyperparams else "") + "(Calibrated)" if use_calibration else "" + "rounds: " + str(model.num_boost_round)
+        opt_info = (f" (Optimized)" if optimize_hyperparams else "") + "(Calibrated)" if use_calibration else ""
         print(f"Timestep {timestep:.2%}{opt_info}:", end=" ")
         model.fit(X, y, val_X=X_val, val_y=y_val)
         models[timestep] = model

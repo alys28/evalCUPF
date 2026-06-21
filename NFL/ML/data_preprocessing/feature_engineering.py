@@ -170,6 +170,54 @@ def add_time_left_in_seconds_for_period(df):
     df['time_left_in_period'] = time_seconds
     return df
 
+def add_yards_to_endzone_signed(df):
+    '''
+    Adds end.yardsToEndzoneNeg: positive when home has possession, negative when away has possession.
+    Skips the first row (header row).
+    '''
+    signed_yards = [None]  # None for header row
+    home_team_id = df.iloc[0]["home_team_id"]
+    for idx in range(1, len(df)):
+        row = df.iloc[idx]
+        yards = row['end.yardsToEndzone']
+        home_has_possession = row['start.team.id'] == home_team_id
+        signed_yards.append(abs(yards) if home_has_possession else -abs(yards))
+    df['end.yardsToEndzoneNeg'] = signed_yards
+    return df
+
+
+def add_down_signed(df):
+    '''
+    Adds end.downNeg: positive when home has possession, negative when away has possession.
+    Skips the first row (header row).
+    '''
+    signed_down = [None]  # None for header row
+    home_team_id = df.iloc[0]["home_team_id"]
+    for idx in range(1, len(df)):
+        row = df.iloc[idx]
+        down = row['end.down']
+        home_has_possession = row['start.team.id'] == home_team_id
+        signed_down.append(abs(down) if home_has_possession else -abs(down))
+    df['end.downNeg'] = signed_down
+    return df
+
+
+def add_distance_signed(df):
+    '''
+    Adds end.distanceNeg: positive when home has possession, negative when away has possession.
+    Skips the first row (header row).
+    '''
+    signed_distance = [None]  # None for header row
+    home_team_id = df.iloc[0]["home_team_id"]
+    for idx in range(1, len(df)):
+        row = df.iloc[idx]
+        distance = row['end.distance']
+        home_has_possession = row['start.team.id'] == home_team_id
+        signed_distance.append(abs(distance) if home_has_possession else -abs(distance))
+    df['end.distanceNeg'] = signed_distance
+    return df
+
+
 def add_field_position_shift(df):
     '''
     How much the play was moved (field_position_shift = end.yardsToEndzone - start.yardsToEndzone)
@@ -193,6 +241,9 @@ def process_df(df, team_dict):
     df = add_possession_bool(df)
     df = add_time_left_in_seconds_for_period(df)
     df = add_field_position_shift(df)
+    df = add_yards_to_endzone_signed(df)
+    df = add_down_signed(df)
+    df = add_distance_signed(df)
     df = add_relative_strength(df)
     df = add_final_score_difference(df)
     # Overwrite the original file
@@ -326,17 +377,17 @@ def process_year_directory(directory, year):
     return f"Year {year}: Processed {processed_count} files"
 
 
-if __name__ == "__main__": 
+if __name__ == "__main__":
     directory = "dataset_interpolated_fixed"
-    
+
     # Get all year directories
     years = [year for year in os.listdir(directory) if os.path.isdir(os.path.join(directory, year))]
-    years = ["2025"] 
+    years = ["2025"]
     # Process years in parallel
     with ThreadPoolExecutor(max_workers=min(len(years), 4)) as executor:
         # Submit all year processing tasks
         future_to_year = {executor.submit(process_year_directory, directory, year): year for year in years}
-        
+
         # Process completed tasks as they finish
         for future in as_completed(future_to_year):
             year = future_to_year[future]

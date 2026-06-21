@@ -120,26 +120,46 @@ All models use Bayesian hyperparameter optimization (Optuna) and isotonic regres
 
 | Model | Type | Loss(es) |
 |-------|------|----------|
-| Logistic Regression | Static | BCE |
+| Logistic Regression | Static | BCE, MSE |
 | Random Forest | Static | BCE, MSE |
-| Gradient Boosted Trees (LightGBM) | Static | BCE, MSE |
+| XGBoost | Static | BCE, MSE |
+| SVM | Static | BCE, MSE |
 | Feedforward Neural Network | Static | BCE, MSE |
 | LSTM | Sequential | BCE, MSE |
-| GRU | Sequential | BCE, MSE |
 | Transformer Encoder | Sequential | BCE, MSE |
+| NFL Heuristic | Heuristic | BCE, MSE |
+| Ensemble | Ensemble | BCE, MSE |
 
 ### Results
 
 Each plot shows the pointwise mean loss difference $\hat{\Delta}_n(t)$ (black line) with 95% confidence bands across normalized game time: **blue** for risk-bucket-based covariance, **gray** for conservative. Regions where the band does not cross zero indicate statistically significant forecast differences.
 
 **XGBoost vs ESPN**
-![XGBoost vs ESPN](NFL/test_8/plot_ESPN_xgboost_model.png)
+![XGBoost vs ESPN](NFL/test_final/plot_xgboost_model.png)
 
 **Logistic Regression vs ESPN**
-![LR vs ESPN](NFL/test_8/plot_ESPN_LR_model.png)
+![LR vs ESPN](NFL/test_final/plot_LR_model.png)
+
+**Random Forest vs ESPN**
+![Random Forest vs ESPN](NFL/test_final/plot_random_forest_model.png)
+
+**SVM vs ESPN**
+![SVM vs ESPN](NFL/test_final/plot_svm_model.png)
 
 **Neural Network vs ESPN**
-![NN vs ESPN](NFL/test_8/plot_ESPN_NN_model.png)
+![NN vs ESPN](NFL/test_final/plot_NN_model.png)
+
+**LSTM vs ESPN**
+![LSTM vs ESPN](NFL/test_final/plot_lstm_model.png)
+
+**Transformer vs ESPN**
+![Transformer vs ESPN](NFL/test_final/plot_transformer_model.png)
+
+**NFL Heuristic vs ESPN**
+![NFL Heuristic vs ESPN](NFL/test_final/plot_nfl_heuristic_model.png)
+
+**Ensemble vs ESPN**
+![Ensemble vs ESPN](NFL/test_final/plot_ensemble_model.png)
 
 ---
 

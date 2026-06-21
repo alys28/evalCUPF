@@ -97,7 +97,7 @@ class SHAP_over_time:
 
 
 if __name__ == "__main__":
-    shap_model_dir = "shap_values/LR_possession_ev"
+    shap_model_dir = "shap_values/XGBoost"
     shap_over_time = SHAP_over_time(FEATURES) 
     for file in os.listdir(shap_model_dir):
         file_dir = os.path.join(shap_model_dir, file)

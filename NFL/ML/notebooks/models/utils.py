@@ -57,17 +57,30 @@ def SHAP_analysis(models, training_data, test_data, save_name,
 
     all_timesteps = sorted(models.keys())
 
-    # Select a evenly-spaced subset based on timesteps_size
-    n = len(all_timesteps)
-    if isinstance(timesteps_size, float) and 0.0 < timesteps_size <= 1.0:
-        num_to_select = max(1, round(n * timesteps_size))
-    elif isinstance(timesteps_size, int) and timesteps_size > 0:
-        num_to_select = min(timesteps_size, n)
-    else:
-        num_to_select = n
+    # Validate that 1 / timesteps_size is an integer
+    assert abs(round(1 / timesteps_size) - (1 / timesteps_size)) < 1e-9, \
+        f"1 / timesteps_size must be an integer, got 1 / {timesteps_size} = {1 / timesteps_size}"
 
-    indices = np.linspace(0, n - 1, num_to_select, dtype=int)
-    selected_timesteps = [all_timesteps[i] for i in indices]
+    all_timesteps_arr = np.array(all_timesteps, dtype=float)
+    ts_min, ts_max = all_timesteps_arr.min(), all_timesteps_arr.max()
+
+    # Validate that timesteps_size resolution is >= the range of all_timesteps
+    ts_range = ts_max - ts_min
+    assert timesteps_size <= ts_range or np.isclose(timesteps_size, ts_range), \
+        f"timesteps_size {timesteps_size} is coarser than the timestep range {ts_range}"
+
+    # Step from min to max by timesteps_size, picking the nearest actual timestep each time
+    grid = np.arange(ts_min, ts_max + timesteps_size * 0.5, timesteps_size)
+    print(f"Selected {len(grid)} timesteps on the grid before deduplication.")
+    print(grid)
+    seen = set()
+    selected_timesteps = []
+    for val in grid:
+        idx = int(np.argmin(np.abs(all_timesteps_arr - val)))
+        t = all_timesteps[idx]
+        if t not in seen:
+            seen.add(t)
+            selected_timesteps.append(t)
 
     # Determine which timesteps still need to be processed
     timesteps_to_run = [
@@ -81,7 +94,7 @@ def SHAP_analysis(models, training_data, test_data, save_name,
 
     print(f"Processing {len(timesteps_to_run)} timesteps "
           f"(skipping {len(selected_timesteps) - len(timesteps_to_run)} already done, "
-          f"{n - len(selected_timesteps)} not selected).")
+          f"{len(all_timesteps) - len(selected_timesteps)} not selected).")
 
     # Run remaining timesteps in parallel
     with ThreadPoolExecutor(max_workers=num_threads) as executor:
