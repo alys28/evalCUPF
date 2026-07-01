@@ -94,7 +94,9 @@ def annotate_possessions(data: dict, possession_index: int, score_difference_ind
     A drive is a contiguous sequence of rows sharing the same possession value
     (1 = home, 0 = away). The points scored for the drive is:
         delta = score_difference[last_row] - score_difference[first_row]
-    Every row in the drive gets this same delta value.
+    negated for away possession so the value is always "points scored by the
+    possessing team" (score_difference is home - away, so an away score lowers
+    it). Every row in the drive gets this same signed value.
     Separator rows (all zeros) get 0.
 
     Parameters
@@ -132,7 +134,11 @@ def annotate_possessions(data: dict, possession_index: int, score_difference_ind
 
             drive_end = i - 1
             delta = arr[drive_end, score_difference_index] - arr[drive_start, score_difference_index]
-            points_scored[drive_start:drive_end] = delta  # drive_end (scoring play) stays 0
+            # sign: score_difference is home - away, so an away score lowers it.
+            # negate for away possession so the label is always "points scored
+            # by the possessing team" (matches _annotate_ground_truth).
+            signed_delta = delta if possession == 1 else -delta
+            points_scored[drive_start:drive_end] = signed_delta  # drive_end (scoring play) stays 0
 
         result[year] = np.concatenate([arr, points_scored.reshape(-1, 1)], axis=1)
 
@@ -455,37 +461,20 @@ if __name__ == "__main__":
     DIRECTORY = "/Users/aly/Documents/University_of_Waterloo/Winter 2025/Research/code/NFL/ML/dataset_interpolated_fixed"
     TRAIN_YEARS = [2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023]
     TEST_YEARS = [2024, 2025]
-    FEATURES = ["game_completed", "relative_strength", "score_difference", "home_has_possession", "end.down", "end.distance", "end.yardsToEndzone",  "home_timeouts_left", "away_timeouts_left"]
+    FEATURES = ["game_completed", "relative_strength", "score_difference", "home_has_possession", "end.downNeg", "end.distanceNeg", "end.yardsToEndzoneNeg",  "home_timeouts_left", "away_timeouts_left"]
     POSSESSION_INDEX = FEATURES.index("home_has_possession")
     SCORE_DIFFERENCE_INDEX = FEATURES.index("score_difference")
     EXPECTED_POINTS_X_VALUES = [0, 3, 6]  # representative points for the 0-2, 3-5, and 6+ buckets
-    # run_pipeline(
-    #     directory=DIRECTORY,
-    #     train_years=TRAIN_YEARS,
-    #     test_years=TEST_YEARS,
-    #     features=FEATURES,
-    #     possession_index=POSSESSION_INDEX,
-    #     score_difference_index=SCORE_DIFFERENCE_INDEX,
-    #     prediction_column="predicted_drive_points",
-    #     ev_x_values=EXPECTED_POINTS_X_VALUES,
-    #     model_type="xgboost",
-    #     use_smote=False,
-    #     use_sample_weights=True,
-    # )
-
-    print("\n[Sanity Check] Training model on all train years for verification ...")
-    all_data = load_dataset(DIRECTORY, FEATURES)
-    all_data = {y: all_data[y] for y in TRAIN_YEARS if y in all_data}
-    annotated = annotate_possessions(all_data, POSSESSION_INDEX, SCORE_DIFFERENCE_INDEX)
-    USE_SMOTE = False
-    USE_SAMPLE_WEIGHTS = True
-    MODEL_TYPE = "xgboost"
-    model, _ = train_possession_model(annotated, list(annotated.keys()), model_type=MODEL_TYPE, use_smote=USE_SMOTE, use_sample_weights=USE_SAMPLE_WEIGHTS)
-
-    sample_year = TRAIN_YEARS[-1]
-    sample_year_dir = os.path.join(DIRECTORY, str(sample_year))
-    sample_csv = sorted(f for f in os.listdir(sample_year_dir) if f.endswith(".csv"))[0]
-    sample_df = pd.read_csv(os.path.join(sample_year_dir, sample_csv), skiprows=[1])
-    sample_ground_truth = annotated[sample_year][:len(sample_df), -1]
-
-    verify_sanity_check(sample_df, model, FEATURES, ev_x_values=EXPECTED_POINTS_X_VALUES, ground_truth=sample_ground_truth, n_samples=25)
+    run_pipeline(
+        directory=DIRECTORY,
+        train_years=TRAIN_YEARS,
+        test_years=TEST_YEARS,
+        features=FEATURES,
+        possession_index=POSSESSION_INDEX,
+        score_difference_index=SCORE_DIFFERENCE_INDEX,
+        prediction_column="predicted_drive_points",
+        ev_x_values=EXPECTED_POINTS_X_VALUES,
+        model_type="xgboost",
+        use_smote=False,
+        use_sample_weights=True,
+    )

@@ -7,8 +7,8 @@ import os
 # - phat_b (below)
 
 # Directory containing CSV files
-directory = "test_final/xgboost_model"  # Change this to your actual directory
-phat_B = "xgboost_phat_b"  # Change this to the actual column name for phat_B in your CSV files
+directory = "test_final/LR_model_straw_men_2"  # Change this to your actual directory
+phat_B = "LR_phat_b"  # Change this to the actual column name for phat_B in your CSV files
 FEATURES = ["game_completed", "relative_strength", "score_difference", "home_has_possession", "end.down", "end.distance", "end.yardsToEndzone", "home_timeouts_left", "away_timeouts_left", "predicted_drive_points_ev"] # Import necessary modules
 
 # Function to process a CSV file
