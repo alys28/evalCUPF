@@ -13,7 +13,12 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from evalCUPF.covariance import sigma_avg, sigma_quarter, sigma_risk_bucket
+from evalCUPF.covariance import (
+    loss_difference_matrix,
+    sigma_avg,
+    sigma_quarter,
+    sigma_risk_bucket,
+)
 from evalCUPF.data_loading import load_entries, load_instrument_matrices
 from evalCUPF.entries import Entries
 from evalCUPF.plotting import CovBand, calc_L_s2, plot_pcb, plot_sup_statistic
@@ -227,19 +232,18 @@ def run_bucket(args):
                     raise ValueError(f"Missing features {missing} in {file_path}")
                 df_subset = df[["timestep"] + args.features].iloc[1:]
                 df_subset = df_subset[df_subset["timestep"].duplicated(keep="last") == False]
-                for _, row in df_subset.iterrows():
-                    t_idx = int(row["timestep"] / timestep_size)
-                    if 0 <= t_idx < n_timesteps:
-                        temp[i, t_idx] = row[args.features].values
+                t_idx = (df_subset["timestep"].to_numpy() / timestep_size).astype(int)
+                keep = (t_idx >= 0) & (t_idx < n_timesteps)
+                temp[i, t_idx[keep]] = df_subset[args.features].to_numpy()[keep]
                 break
 
-        for t in range(n_timesteps):
-            p_est[t] = buckets.assign_bucket(temp[:, t, :], round(timestep_size * t, 3), return_v=True)
+    # One pass over timesteps, each assigning all games at once.
+    for t in range(n_timesteps):
+        p_est[t] = buckets.assign_bucket(temp[:, t, :], round(timestep_size * t, 3), return_v=True)
 
     p_est = p_est.T
 
-    d_matrix = (entries.Y - entries.p_A) ** 2 - (entries.Y - entries.p_B) ** 2
-    Delta_n_hat = d_matrix.mean(axis=0)
+    Delta_n_hat = loss_difference_matrix(entries).mean(axis=0)
     risk_bucket_cov = sigma_risk_bucket(entries, p_est)
     result = p_value_from_covariance(entries, Delta_n_hat, risk_bucket_cov, num_simulations=args.B)
     p_val = result.p_value_approx

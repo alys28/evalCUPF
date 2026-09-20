@@ -107,7 +107,9 @@ def plot_delta_with_band(T, Delta_n_hat, lower, upper, true_delta_n=None,
 # --------------------------------------------------------------------------
 
 def squared_error(y, p):
-    return (y - p) ** 2
+    """Same Brier-equivalent scaling as ``helpers.square_loss``, so plotted
+    loss differences match the tested statistic."""
+    return 0.5 * (y - p) ** 2
 
 
 @dataclass
