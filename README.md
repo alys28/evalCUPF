@@ -6,11 +6,12 @@
 
 ## Overview
 
-This repository implements a statistical framework for **testing whether two continuously updated probabilistic forecasts are equivalent or whether one is superior to the other**. The core idea: given two competing forecast sequences $\hat{p}^A_i(t)$ and $\hat{p}^B_i(t)$ over $n$ games (or events), each evaluated at a continuous intra-game time $t \in [0, 1]$, we construct a test statistic based on the supremum of the normalized pointwise loss difference process
+This repository implements a statistical framework for **testing whether two continuously updated probabilistic forecasts are equivalent, or whether one is superior to the other**. Given two competing forecast sequences $\hat{p}^A_i(t)$ and $\hat{p}^B_i(t)$ over $n$ events, each evaluated at continuous intra-event time $t \in [0, 1]$, together with binary outcomes $Y_i$, the framework provides two families of test:
 
-$$T_n = \sup_{t \in [0,1]} \left| \sqrt{n}\, \hat{\Delta}_n(t) \right|$$
+- **Unconditional (Diebold-Mariano style)**: is one forecaster better *on average* at some point in the event?
+- **Conditional predictive ability (CPA)**: is one forecaster better *in particular states*, identified by instruments built from observed covariates? This can detect differences that cancel out on average and are therefore invisible to the unconditional test.
 
-and derive its asymptotic null distribution via a Gaussian process limit, from which a $p$-value is computed by simulation.
+Both reduce to a supremum statistic over $t$ whose null distribution has no closed form and is obtained by Monte Carlo simulation of a Gaussian process limit.
 
 The framework is validated on NFL in-game win probability forecasting, where trained ML models are benchmarked against ESPN's real-time forecasts.
 
@@ -20,32 +21,30 @@ The framework is validated on NFL in-game win probability forecasting, where tra
 
 ```
 .
-├── evalCUPF/                   # Core statistical testing framework
-│   ├── entries.py              # Data container for forecast pairs
-│   ├── C_estimator.py          # Covariance matrix estimation
-│   ├── calculate_p_val.py      # Test statistic and p-value computation
-│   ├── risk_buckets.py         # Risk-bucket-based covariance estimation
-│   ├── plot_results.py         # Pointwise confidence band plots
-│   └── NFL_example/            # End-to-end NFL application
-│       ├── run_NFL.py          # Main runner script
-│       ├── nfl_heuristic_bucketer.py  # NFL-specific heuristic bucketing
-│       ├── nfl_bucketer.py     # K-means bucketing for NFL
-│       └── combine_data.py     # Aggregates per-game CSV outputs
+├── evalCUPF/                       # Core framework, dataset-agnostic
+│   ├── entries.py                  # Entries: the data container every test consumes
+│   ├── covariance.py               # All covariance estimators (sigma_*)
+│   ├── tests.py                    # The tests and confidence sets
+│   ├── helpers.py                  # Losses, matrix sqrt/PSD repair, BM testbed
+│   ├── data_loading.py             # Long-format CSV -> Entries
+│   ├── build_instruments.py        # Runs instrument callbacks -> instruments CSV
+│   ├── instruments_helper.py       # Instrument matrix interleaving mechanics
+│   ├── risk_buckets.py             # Risk-bucket clustering for covariance estimation
+│   ├── plotting.py                 # Sup-statistic and confidence-band plots
+│   └── NFL_example/                # This dataset's specifics
+│       ├── main.py                 # CLI: `cpa` and `bucket` subcommands + NFL constants
+│       ├── instruments.py          # Instrument callbacks; writes the instruments CSV
+│       ├── nfl_heuristic_bucketer.py
+│       ├── nfl_bucketer.py
+│       ├── combine_data.py
+│       └── data/                   # Merged per-model forecast panels (gitignored)
 │
-├── NFL/
+├── NFL/                            # Forecasting models and data pipeline
 │   ├── ML/
-│   │   ├── notebooks/          # Jupyter notebooks for each model
-│   │   ├── models/             # Reusable model classes
-│   │   │   ├── Model.py        # Abstract base (preprocessing, calibration, Optuna HPO)
-│   │   │   ├── xg_boost.py     # LightGBM (gradient boosted trees)
-│   │   │   ├── logistic_regression.py
-│   │   │   ├── direct_prediction_network.py        # Feedforward NN
-│   │   │   ├── direct_prediction_network_lstm.py   # LSTM
-│   │   │   ├── direct_prediction_network_transformer.py
-│   │   │   ├── nfl_heuristic_bucket.py
-│   │   │   └── kmeans_bucket.py
-│   │   └── data_preprocessing/ # Feature engineering, interpolation, web scraping
-│   └── test_8/                 # Results and plots from latest experiment run
+│   │   ├── notebooks/              # One notebook per model
+│   │   ├── models/                 # Model classes (Optuna HPO, calibration)
+│   │   └── data_preprocessing/     # Feature engineering, interpolation, scraping
+│   └── test_final/                 # Results and plots
 │
 ├── requirements.txt
 └── README.md
@@ -57,115 +56,123 @@ The framework is validated on NFL in-game win probability forecasting, where tra
 
 ### Problem Setup
 
-Let $i$ index events (games) and $t \in [0, 1]$ denote normalized event progress. Two forecasters produce $\hat{p}^A_i(t)$ and $\hat{p}^B_i(t)$, and we observe binary outcomes $Y_i$. The pointwise average loss difference is
+Let $i$ index events and $t \in [0,1]$ denote normalized progress. The pointwise average loss difference is
 
 $$\hat{\Delta}_n(t) = \frac{1}{n} \sum_{i=1}^n \left[ L(Y_i, \hat{p}^A_i(t)) - L(Y_i, \hat{p}^B_i(t)) \right]$$
 
-where $L$ is the Brier score (mean squared error) by default. Negative values favor model $A$; positive values favor model $B$. The null hypothesis is $\mathcal{H}_0: \sup_{t} |\Delta_n(t)| = 0$.
+with $L$ the Brier score by default. Negative values favour model $A$, positive values model $B$.
 
-### Asymptotic Theory
+### Unconditional test
 
-Under $\mathcal{H}_0$, the scaled process $\sqrt{n}\,\hat{\Delta}_n(\cdot)$ converges weakly to a mean-zero Gaussian process $\Gamma$ with covariance kernel
+$$\mathcal{H}_0: \Delta(t) = 0 \quad \text{for all } t, \qquad T_n = \sup_{t \in [0,1]} \left| \sqrt{n}\, \hat{\Delta}_n(t) \right|$$
 
-$$C(t, s) = \lim_{n\to\infty} \frac{4}{n} \sum_{i=1}^n (\hat{p}^A_i(t) - \hat{p}^B_i(t))(\hat{p}^A_i(s) - \hat{p}^B_i(s))\, p_i(t \vee s)(1 - p_i(t \vee s))$$
+Under $\mathcal{H}_0$, $\sqrt{n}\,\hat{\Delta}_n(\cdot)$ converges weakly to a mean-zero Gaussian process $\Gamma$. For the Brier score the loss difference is linear in $Y_i$, giving the closed-form covariance kernel
 
-A $p$-value is obtained by simulating $B = 10{,}000$ realizations of $\sup_t |\Gamma(t)|$ and computing the fraction exceeding $T_n$.
+$$C(t, s) = \lim_{n\to\infty} \frac{4}{n} \sum_{i=1}^n \delta_i(t)\,\delta_i(s)\; p_i(t \vee s)\left(1 - p_i(t \vee s)\right), \qquad \delta_i(t) = \hat{p}^A_i(t) - \hat{p}^B_i(t)$$
 
-### Covariance Estimation
+The $p_i(t \vee s)$ structure is the martingale property of the true probability path, the analogue of $\mathrm{Cov}(B_s, B_t) = \min(s,t)$ for Brownian motion.
 
-Two estimators of $C$ are provided and compared side-by-side in all plots:
+### Conditional predictive ability (CPA)
 
-| Method | Description |
-|--------|-------------|
-| **Risk Buckets** | Stratifies game states into risk groups and estimates $p(1-p)$ empirically per bucket. Two variants: K-means (`NFLBucketer`) and a phase-aware heuristics approach (`NFLHeuristicBucketer`). |
-| **Conservative** | Replaces $p(1-p)$ with its maximum $\frac{1}{4}$, yielding wider but assumption-free confidence bands. |
+The unconditional test can miss a real difference: if model $A$ is better in some states and model $B$ in others, the two can cancel in the average. CPA tests the sharper null
 
-### Key Modules
+$$\mathcal{H}_0: \mathbb{E}\left[d_i(t) \mid \mathcal{F}_t\right] = 0 \quad \text{for all } t$$
 
-- [**`entries.py`**](evalCUPF/entries.py) — `Entries` class: loads paired forecast DataFrames into aligned $(n \times T)$ arrays for $\hat{p}^A$, $\hat{p}^B$, and $Y$.
-- [**`C_estimator.py`**](evalCUPF/C_estimator.py) — `estimate_C(entries, p_est)`: returns the $(T \times T)$ covariance matrix. Pass `p_est=None` for the conservative estimate.
-- [**`calculate_p_val.py`**](evalCUPF/calculate_p_val.py) — `calculate_p_val(entries, p_est, B)`: computes $T_n$ and the simulation-based $p$-value. Uses Cholesky decomposition with eigendecomposition fallback for numerical stability.
-- [**`risk_buckets.py`**](evalCUPF/risk_buckets.py) — `create_buckets(train_dfs, features, num_bucketers, BucketerClass, ...)`: builds a `BucketContainer` mapping game-state features at each timestep to empirical $\hat{p}(1-\hat{p})$ estimates.
-- [**`plot_results.py`**](evalCUPF/plot_results.py) — `plot_pcb(df_stats, ...)`: plots the mean loss difference with pointwise 95% confidence bands for both covariance estimators.
+where $d_i(t)$ is the per-event loss difference. This is operationalized through $m$ **instruments** $h_k(t)$, functions of covariates observable at time $t$, under which the null implies
+
+$$\Delta_k(t) = \mathbb{E}\left[h_k(t)\, d(t)\right] = 0 \quad \text{for } k = 1, \dots, m$$
+
+The statistic is the supremum of the Euclidean norm across instruments,
+
+$$T_n^{\mathrm{CPA}} = \sup_{t \in [0,1]} \left\| \sqrt{n}\, \hat{\Delta}_n(t) \right\|_2, \qquad \hat{\Delta}_n(t) \in \mathbb{R}^m, \quad \hat{\Delta}_{n,k}(t) = \frac{1}{n}\sum_i h_{k,i}(t)\, d_i(t)$$
+
+so the limit is an $\mathbb{R}^m$-valued Gaussian process with an $(mT \times mT)$ covariance. Taking $h \equiv 1$ recovers the unconditional test exactly.
+
+Instruments are **interleaved** in the matrix layout: instrument $k$ at timestep $j$ occupies column $m \cdot j + k$.
+
+### Covariance estimators
+
+All live in [`covariance.py`](evalCUPF/covariance.py) and take an `Entries`:
+
+| Estimator | Assumptions | Use |
+|---|---|---|
+| `sigma_avg` | None; generic sample covariance of the loss-difference paths | Default for the unconditional test |
+| `sigma_quarter` | Uses $p(1-p) \le \tfrac14$ and drops negative cross terms | Conservative, assumption-free bands |
+| `sigma_risk_bucket` | Local $p(t)$ estimated by clustering game states into risk buckets | Tighter bands when covariates are informative |
+| `sigma_true` / `sigma_true_v2` | Requires a known or proxy true probability path | Exact; mainly for simulation studies |
+| `sigma_cpa` | None; sample covariance of the *instrumented* loss differences | The CPA test |
+
+`sigma_quarter` clips at $\max(0, \delta_i\delta_j)$ before scaling by $\tfrac14$, which preserves validity of the bound and guarantees a PSD result.
+
+### Tests and confidence sets
+
+In [`tests.py`](evalCUPF/tests.py):
+
+| Function | Null hypothesis |
+|---|---|
+| `test_h0_avg` | $\Delta(t) = 0$ for all $t$ (unconditional) |
+| `test_h0_cpa` | $\mathbb{E}[d(t) \mid \mathcal{F}_t] = 0$ (conditional, via instruments) |
+| `weighted_integral_test` | $\int w(t)\Delta(t)\,dt = 0$ |
+| `absolute_supremum_test` | $\sup_t |\Delta(t)| \le \varepsilon$ |
+| `uniform_confidence_set` | joint band covering $\Delta(t)$ at all $t$ |
+| `weighted_integral_confidence_set` | Wald CI for $\int w(t)\Delta(t)\,dt$ |
+
+`p_value_from_covariance` is the shared primitive: given $\hat{\Delta}_n$ and any covariance estimate, it simulates $\sup_t|\Gamma(t)|$ and returns the empirical $p$-value.
 
 ---
 
 ## NFL Application
 
-### Forecasting Task
+### Forecasting task
 
-We predict in-game win probability for the home team across NFL games from 2016–2024. The game is discretized into $\Delta t = 0.005$ intervals (201 timesteps over $[0, 1]$). A separate model is trained for each timestep on 2016–2022 seasons, validated on 2023, and tested on 2024. Overtime periods are excluded.
-
-### Features
-
-| Feature | Description |
-|---------|-------------|
-| `score_difference` | Home score minus away score |
-| `timestep` | Normalized game progress $\in [0, 1]$ |
-| `home_has_possession` | Boolean |
-| `type.id` | Play type identifier |
-| `relative_strength` | ESPN pre-game probability (ELO proxy) |
-| `end.down` | Down number (1–4) |
-| `end.yardsToEndzone` | Yards to opponent's end zone |
-| `end.distance` | Yards to first down |
-| `field_position_shift` | Change in field position during the play |
-| `home_timeouts_left` | Home team timeouts remaining |
-| `away_timeouts_left` | Away team timeouts remaining |
-
-Play-by-play events are converted to a uniform time grid via last-observation-carried-forward interpolation: for each timestep $t_k$, the feature vector is taken from the most recent play with $g_{i,j} \leq t_k$.
+In-game win probability for the home team, 2016–2024. Games are discretized to $\Delta t = 0.005$ (201 timesteps over $[0,1]$); a separate model is trained per timestep on 2016–2022, validated on 2023, tested on 2024. Overtime excluded. Play-by-play events are mapped to the uniform grid by last-observation-carried-forward.
 
 ### Models
 
-All models use Bayesian hyperparameter optimization (Optuna) and isotonic regression calibration. A separate model instance is trained per timestep.
+All use Optuna hyperparameter optimization and isotonic calibration, one instance per timestep: Logistic Regression, Random Forest, XGBoost, SVM, Feedforward NN, LSTM, Transformer Encoder, NFL Heuristic, and an Ensemble.
 
-| Model | Type | Loss(es) |
-|-------|------|----------|
-| Logistic Regression | Static | BCE, MSE |
-| Random Forest | Static | BCE, MSE |
-| XGBoost | Static | BCE, MSE |
-| SVM | Static | BCE, MSE |
-| Feedforward Neural Network | Static | BCE, MSE |
-| LSTM | Sequential | BCE, MSE |
-| Transformer Encoder | Sequential | BCE, MSE |
-| NFL Heuristic | Heuristic | BCE, MSE |
-| Ensemble | Ensemble | BCE, MSE |
+### Covariates available as instruments
 
-### Results
+`score_difference`, `predicted_drive_points_ev`, `relative_strength`, `end.down`, `end.distance`, `end.yardsToEndzone`, `home_timeouts_left`, `away_timeouts_left`, `home_has_possession`.
 
-Each plot shows the pointwise mean loss difference $\hat{\Delta}_n(t)$ (black line) with 95% confidence bands across normalized game time: **blue** for risk-bucket-based covariance, **gray** for conservative. Regions where the band does not cross zero indicate statistically significant forecast differences.
+### Results: unconditional bands
 
-**XGBoost vs ESPN**
-![XGBoost vs ESPN](NFL/test_final/plot_xgboost_model.png)
+Each plot shows $\hat{\Delta}_n(t)$ (black) with 95% pointwise bands: **blue** risk-bucket covariance, **grey** conservative. Bands excluding zero indicate a significant difference.
 
-**Logistic Regression vs ESPN**
-![LR vs ESPN](NFL/test_final/plot_LR_model.png)
+| | |
+|---|---|
+| **XGBoost vs ESPN**<br>![XGBoost vs ESPN](NFL/test_final/plot_xgboost_model.png) | **Logistic Regression vs ESPN**<br>![LR vs ESPN](NFL/test_final/plot_LR_model.png) |
+| **Random Forest vs ESPN**<br>![Random Forest vs ESPN](NFL/test_final/plot_random_forest_model.png) | **SVM vs ESPN**<br>![SVM vs ESPN](NFL/test_final/plot_svm_model.png) |
+| **Neural Network vs ESPN**<br>![NN vs ESPN](NFL/test_final/plot_NN_model.png) | **LSTM vs ESPN**<br>![LSTM vs ESPN](NFL/test_final/plot_lstm_model.png) |
+| **Transformer vs ESPN**<br>![Transformer vs ESPN](NFL/test_final/plot_transformer_model.png) | **NFL Heuristic vs ESPN**<br>![NFL Heuristic vs ESPN](NFL/test_final/plot_nfl_heuristic_model.png) |
+| **Ensemble vs ESPN**<br>![Ensemble vs ESPN](NFL/test_final/plot_ensemble_model.png) | |
 
-**Random Forest vs ESPN**
-![Random Forest vs ESPN](NFL/test_final/plot_random_forest_model.png)
+### Results: unconditional vs conditional
 
-**SVM vs ESPN**
-![SVM vs ESPN](NFL/test_final/plot_svm_model.png)
+Sweeping 9 covariates × 8 transforms as single instruments, over 544 games (10,000 simulations, $\alpha = 0.05$):
 
-**Neural Network vs ESPN**
-![NN vs ESPN](NFL/test_final/plot_NN_model.png)
+| Model (vs ESPN) | DM $p$ | best CPA $p$ | best instrument |
+|---|---|---|---|
+| logistic | **0.3850** | **0.0147** | `end.down` × $1/(1+\lvert x\rvert)$ |
+| ensemble | 0.0340 | 0.0000 | `end.down` × $1/(1+\lvert x\rvert)$ |
+| xgboost | 0.0023 | 0.0003 | `score_difference` × $\mathbb{1}[x<7]$ |
+| lstm | 0.0003 | 0.0000 | `score_difference` × $x^2$ |
+| svm | 0.0003 | 0.0000 | `score_difference` × $x^2$ |
+| nn | 0.0000 | 0.0000 | `score_difference` × $1/(1+\lvert x\rvert)$ |
+| transformer | 0.0000 | 0.0000 | `score_difference` × $1/(1+\lvert x\rvert)$ |
+| rf | 0.0000 | 0.0000 | `score_difference` × $x^2$ |
 
-**LSTM vs ESPN**
-![LSTM vs ESPN](NFL/test_final/plot_lstm_model.png)
+The DM $p$-value is instrument-free: one number per model pair.
 
-**Transformer vs ESPN**
-![Transformer vs ESPN](NFL/test_final/plot_transformer_model.png)
+**The logistic row is the case of interest.** It is the only model ESPN is *not* distinguishable from unconditionally ($p = 0.385$), yet conditioning on down via $h(t) = 1/(1+|\text{end.down}|)$ rejects at $p \approx 0.015$. The instrument upweights early downs (1st down $\to 0.5$, 4th down $\to 0.2$), and the rejection comes from a single sharp excursion in the final few percent of game time. Every other model already rejects unconditionally, so CPA has no additional gap to demonstrate there.
 
-**NFL Heuristic vs ESPN**
-![NFL Heuristic vs ESPN](NFL/test_final/plot_nfl_heuristic_model.png)
-
-**Ensemble vs ESPN**
-![Ensemble vs ESPN](NFL/test_final/plot_ensemble_model.png)
+Verified robust across 5 seeds at 10,000 simulations: DM $p \in [0.382, 0.391]$, CPA $p \in [0.015, 0.018]$. Adding a second instrument only weakened the result, so the single instrument is the cleanest example.
 
 ---
 
 ## Getting Started
 
-### 1. Clone and Set Up the Environment
+### 1. Environment
 
 ```bash
 git clone <repo-url>
@@ -173,112 +180,126 @@ cd <repo-root>
 
 python -m venv env
 source env/bin/activate       # Windows: env\Scripts\activate
-
 pip install -r requirements.txt
+
+export PYTHONPATH=$(pwd)      # Windows: set PYTHONPATH=%cd%
 ```
 
-### 2. Set the Python Path
+### 2. Run the CPA / DM tests
 
-Since there is no installed package yet, add the repo root to your Python path so imports resolve correctly:
+Instruments are precomputed into a CSV, so the test itself never evaluates a transform. Edit the `INSTRUMENTS` dict in [`NFL_example/instruments.py`](evalCUPF/NFL_example/instruments.py), then:
 
 ```bash
-export PYTHONPATH=$(pwd)       # Windows: set PYTHONPATH=%cd%
+# Step 1: write h(t) values for every instrument in INSTRUMENTS
+python -m evalCUPF.NFL_example.instruments --model logistic \
+    --out evalCUPF/NFL_example/instruments_logistic.csv
+
+# Step 2: run the tests
+python -m evalCUPF.NFL_example.main cpa --model logistic --test both \
+    --instruments-file evalCUPF/NFL_example/instruments_logistic.csv \
+    --instrument-columns end_down_inv1p
 ```
 
-Or add it permanently in your shell profile / `.env` file.
+```
+[DM sup test]  sup|Gamma_n| = 0.0858  crit = 0.1155  p = 0.3851
+[CPA test]     sup||Gamma_n|| = 0.0501  crit = 0.0450  p = 0.0187
+```
 
-### 3. Running the NFL Functional Test
+Plots are written to `evalCUPF/NFL_example/output/` by default (`--no-plot` to skip): `dm_<model>.png`, `cpa_<model>.png` (sup statistic vs critical value), and `delta_<model>.png` (signed loss difference with both covariance bands).
 
-The entry point is [**`evalCUPF/NFL_example/run_NFL.py`**](evalCUPF/NFL_example/run_NFL.py). It:
+| Flag | Meaning |
+|---|---|
+| `--model` | candidate model vs ESPN: `logistic`, `ensemble`, `lstm`, `nn`, `xgboost`, `svm`, `transformer`, `rf` |
+| `--test` | `dm`, `cpa`, or `both` (default) |
+| `--instrument-columns` | columns from the instruments CSV; pass several for a joint test ($m$ = count) |
+| `--num-simulations` | Monte Carlo draws (default 10000) |
+| `--alpha` | significance level (default 0.05) |
+| `--seed` | RNG seed |
+| `--out-dir` / `--no-plot` | plot destination / suppress plots |
 
-1. Loads per-game training CSVs to build risk buckets.
-2. Loads a combined forecast CSV (`game_id`, `game_completed`, `phat_A`, `phat_B`, `Y`).
-3. Assigns each test game-state to a risk bucket and estimates $\hat{p}(1-\hat{p})$.
-4. Computes the $p$-value and generates the pointwise confidence band plot.
+The instruments CSV must be built with the same `--model` used for the test, so the row ordering matches.
+
+### 3. Defining instruments
+
+Each instrument is a plain function taking the dict of $(n, T)$ covariate matrices and returning one $(n, T)$ array of $h(t)$ values, free to combine several covariates:
 
 ```python
-from evalCUPF.NFL_example.run_NFL import run_test
-from evalCUPF.NFL_example.combine_data import combine_csv_files
+# evalCUPF/NFL_example/instruments.py
+import numpy as np
 
-# Step 1: aggregate per-game model prediction CSVs into a single file
-combine_csv_files("xgboost_model", "NFL/test_8")
+def end_down_inv1p(cov):
+    return 1.0 / (1.0 + np.abs(cov["end.down"]))
 
-# Step 2: run the functional equivalence test
-p_val = run_test(
-    dir="NFL/ML/dataset_interpolated_fixed",   # root with per-year subdirectories
-    train_years=[2021, 2022, 2023],             # seasons used to build risk buckets
-    test_years=[2024, 2025],                    # seasons to evaluate
-    forecast_file="NFL/test_8/xgboost_model_combined_data.csv",
-    features=[
-        "score_difference", "relative_strength",
-        "end.yardsToEndzone", "end.down", "end.distance"
-    ],
-    num_bucketers=50,    # number of timestep bucket intervals
-    num_buckets=5,       # sub-buckets per interval
-    B=10000,             # Monte Carlo draws for p-value
-    phat_A="ESPN",
-    phat_B="nfl_heuristic_phat_b",
-    save_plot="NFL/test_8/plot_ESPN_xgboost_model.png",
-)
-print(f"p-value: {p_val:.4f}")
+def late_game_score_gap(cov):
+    return cov["score_difference"] ** 2 * (cov["end.down"] >= 3)
+
+INSTRUMENTS = {
+    "end_down_inv1p": end_down_inv1p,
+    "late_game_score_gap": late_game_score_gap,
+}
 ```
 
-Or run directly:
+### 4. Run the risk-bucket test
+
+A separate pipeline using per-game year-split CSVs and a clustering-based covariance:
 
 ```bash
-python -m evalCUPF.NFL_example.run_NFL
+python -m evalCUPF.NFL_example.main bucket \
+    --data-dir NFL/ML/dataset_interpolated_fixed \
+    --forecast-file NFL/test_final/LR_model_ezS_strawmen_combined_data.csv \
+    --train-years 2021 2022 2023 \
+    --test-years 2024 2025 \
+    --features score_difference relative_strength end.yardsToEndzone end.down end.distance \
+    --num-bucketers 50 --num-buckets 5 \
+    --phat-a-label ESPN --phat-b-label "Logistic Regression" \
+    --save-plot NFL/test_final/plot_LR_model_ezS_strawmen.png \
+    --save-p-val NFL/test_final/p_val_LR_model_ezS_strawmen.txt
 ```
 
-### 4. Using the Framework on Your Own Data
+### 5. Using the framework on your own data
 
-Prepare a forecast CSV with these columns:
+Nothing in `evalCUPF/` assumes the NFL layout; all column names and merge keys are caller-supplied. Build an `Entries` and call the tests directly:
+
+```python
+import numpy as np
+import pandas as pd
+from evalCUPF.entries import Entries
+from evalCUPF.tests import test_h0_avg, test_h0_cpa
+
+df = pd.read_csv("your_forecasts.csv")   # long format: one row per (event, timestep)
+
+entries = Entries(timestep_size=0.005)
+entries.load_entries(df, timestep="t", p_A="phat_A", p_B="phat_B",
+                     y="Y", id_field="event_id")
+
+# Unconditional test
+dm = test_h0_avg(entries, num_simulations=10_000, alpha=0.05)
+print(dm.p_value_approx)
+
+# CPA test: attach precomputed h(t) values, one (n_events, T) array per instrument
+entries.set_instrument_values([h1, h2])
+cpa = test_h0_cpa(entries, num_simulations=10_000, alpha=0.05)
+print(cpa.p_value_approx)
+```
+
+Required columns:
 
 | Column | Type | Description |
-|--------|------|-------------|
-| `game_id` | str/int | Unique event identifier |
-| `game_completed` | float | Timestep $t \in [0, 1]$ (e.g., steps of 0.005) |
+|---|---|---|
+| event id | str/int | Unique event identifier |
+| timestep | float | $t \in [0,1]$, same grid for every event |
 | `phat_A` | float | Model A probability forecast |
 | `phat_B` | float | Model B probability forecast |
 | `Y` | int | Binary outcome (0 or 1) |
 
-**Minimal example — conservative covariance (no auxiliary data needed):**
-
-```python
-import pandas as pd
-from evalCUPF.entries import Entries
-from evalCUPF.calculate_p_val import calculate_p_val
-from evalCUPF.C_estimator import estimate_C
-from evalCUPF.plot_results import plot_pcb, calc_L_s2
-
-df = pd.read_csv("your_forecasts.csv")
-
-entries = Entries(timestep_size=0.005)
-entries.load_entries(df, "game_completed", "phat_A", "phat_B", id_field="game_id")
-
-# p_est=None uses the conservative estimator (p(1-p) = 1/4)
-p_val = calculate_p_val(entries, p_est=None, B=10000)
-print(f"p-value: {p_val:.4f}")
-
-# Plot pointwise confidence bands
-C_cons = estimate_C(entries, p_est=None)
-df_stats = calc_L_s2(df, C_cons, C_cons,
-                     pA="phat_A", pB="phat_B", Y="Y", grid="game_completed")
-plot_pcb(df_stats, grid="game_completed", L="L",
-         var_C1="sigma2_C1", var_C2="sigma2_C2",
-         phat_A="Model A", phat_B="Model B",
-         save_plot="output_plot.png")
-```
-
-**With risk-bucket covariance** — provide a `p_est` array of shape `(n_games, n_timesteps)` containing empirical $\hat{p}(1-\hat{p})$ values, built via `create_buckets` and `BucketContainer.assign_bucket` (see [NFL_example/run_NFL.py](evalCUPF/NFL_example/run_NFL.py) for a complete example).
+For the conditional test, `evalCUPF.build_instruments.build_instruments_csv` will run your callbacks over a merged panel and write the instruments CSV; `evalCUPF.data_loading.load_instrument_matrices` reads it back aligned to an `Entries`.
 
 ---
 
 ## Dependencies
 
-Core libraries (see `requirements.txt` for pinned versions):
-
 | Category | Libraries |
-|----------|-----------|
+|---|---|
 | ML | `scikit-learn`, `lightgbm`, `xgboost`, `catboost`, `torch`, `tensorflow` |
 | HPO | `optuna` |
 | Data | `pandas`, `numpy`, `scipy` |

@@ -200,4 +200,4 @@ def plot_pcb(df, covs: List[CovBand], grid="grid", L="L", phat_A="phat_A",
     plt.tight_layout()
     if save_plot is not None:
         plt.savefig(save_plot, dpi=300)
-    plt.show()
+    plt.close()

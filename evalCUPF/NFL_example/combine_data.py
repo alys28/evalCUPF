@@ -20,7 +20,6 @@ def combine_csv_files(name, test_dir, base_dir="/Users/aly/Documents/University_
     combined_data = pd.concat(game_data_list, ignore_index=True)
     output_csv = os.path.join(base_dir, test_dir, f"{name}_combined_data.csv")
     combined_data.to_csv(output_csv, index=False)
-    print(combined_data)
     return combined_data
 
 if __name__ == "__main__":

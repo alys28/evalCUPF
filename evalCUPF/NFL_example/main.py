@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from evalCUPF.covariance import sigma_avg, sigma_risk_bucket
+from evalCUPF.covariance import sigma_avg, sigma_quarter, sigma_risk_bucket
 from evalCUPF.data_loading import load_entries, load_instrument_matrices
 from evalCUPF.entries import Entries
 from evalCUPF.plotting import CovBand, calc_L_s2, plot_pcb, plot_sup_statistic
@@ -74,7 +74,7 @@ def add_cpa_parser(subparsers):
     p.add_argument("--num-simulations", type=int, default=10_000)
     p.add_argument("--alpha", type=float, default=0.05)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--plot", action="store_true")
+    p.add_argument("--no-plot", action="store_true", help="Skip writing plots to --out-dir.")
     p.add_argument("--out-dir", default=DEFAULT_OUT_DIR)
     p.set_defaults(func=run_cpa)
     return p
@@ -117,7 +117,7 @@ def run_cpa(args):
         print(f"[CPA test]     sup||Gamma_n|| = {cpa.sup_norm_Gamma_hat:.4f}  "
               f"crit = {cpa.crit_values:.4f}  p = {cpa.p_value_approx:.4f}")
 
-    if args.plot:
+    if not args.no_plot:
         os.makedirs(args.out_dir, exist_ok=True)
         if "dm" in results:
             plot_sup_statistic(
@@ -133,6 +133,25 @@ def run_cpa(args):
                 save_path=os.path.join(args.out_dir, f"cpa_{args.model}.png"),
             )
 
+        # Signed loss difference with confidence bands: shows which forecast
+        # is better and by how much, which the sup-statistic plots can't.
+        forecast_df = pd.DataFrame({
+            TIMESTEP_COL: np.tile(entries.T, len(entries)),
+            "phat_A": entries.p_A.reshape(-1),
+            "phat_B": entries.p_B.reshape(-1),
+            "Y": entries.Y.reshape(-1),
+        })
+        covs = [
+            CovBand(C=sigma_avg(entries), label="Sample", color="blue"),
+            CovBand(C=sigma_quarter(entries), label="Conservative", color="black"),
+        ]
+        df_stats = calc_L_s2(forecast_df, covs, pA="phat_A", pB="phat_B", Y="Y",
+                             grid=TIMESTEP_COL)
+        plot_pcb(df_stats, covs, grid=TIMESTEP_COL, L="L",
+                 phat_A="ESPN", phat_B=args.model,
+                 save_plot=os.path.join(args.out_dir, f"delta_{args.model}.png"))
+        print(f"Plot saved to: {os.path.join(args.out_dir, f'delta_{args.model}.png')}")
+
     return results
 
 
@@ -146,8 +165,8 @@ def add_bucket_parser(subparsers):
     p.add_argument("--forecast-file", required=True, help="Combined-data CSV with phat_A/phat_B/Y per game-timestep.")
     p.add_argument("--train-years", type=int, nargs="+", required=True)
     p.add_argument("--test-years", type=int, nargs="+", required=True)
-    p.add_argument("--feature", action="append", default=[], dest="features", required=True,
-                   help="Add one bucketing feature column; repeat for multiple.")
+    p.add_argument("--features", nargs="+", required=True,
+                   help="Feature columns used for bucketing.")
     p.add_argument("--num-bucketers", type=int, default=10)
     p.add_argument("--num-buckets", type=int, default=3)
     p.add_argument("--num-simulations", type=int, default=10_000, dest="B")
@@ -172,10 +191,13 @@ def run_bucket(args):
                 df["home_win"] = df.iloc[0]["home_win"]
                 train_dfs.append(df.iloc[1:])
 
+    label = f"{args.phat_a_label} vs {args.phat_b_label}"
+    print(f"Loading data for {label}...")
+    print(f"Building risk buckets from {len(train_dfs)} training games "
+          f"({args.num_bucketers} intervals x {args.num_buckets} buckets)...")
     buckets = create_buckets(train_dfs, args.features, args.num_bucketers,
                              NFLHeuristicBucketer, label_col="home_win",
                              n_buckets=args.num_buckets)
-    print(f"Loaded {len(train_dfs)} dataframes from train directories.")
 
     entries = Entries()
     forecast_data = pd.read_csv(args.forecast_file)
@@ -186,7 +208,7 @@ def run_bucket(args):
     temp = np.zeros((len(entries), n_timesteps, len(args.features)))
     p_est = np.zeros((n_timesteps, len(entries)))
 
-    print("Loading test files...")
+    print(f"{len(entries)} games, {entries.T_length} timesteps")
     for i in range(len(entries)):
         game_id = entries.get_id(i)
         file_name = f"game_{game_id}.csv"
@@ -214,7 +236,6 @@ def run_bucket(args):
         for t in range(n_timesteps):
             p_est[t] = buckets.assign_bucket(temp[:, t, :], round(timestep_size * t, 3), return_v=True)
 
-    print("Loaded test files, calculating covariance matrix...")
     p_est = p_est.T
 
     d_matrix = (entries.Y - entries.p_A) ** 2 - (entries.Y - entries.p_B) ** 2
@@ -222,15 +243,18 @@ def run_bucket(args):
     risk_bucket_cov = sigma_risk_bucket(entries, p_est)
     result = p_value_from_covariance(entries, Delta_n_hat, risk_bucket_cov, num_simulations=args.B)
     p_val = result.p_value_approx
-    print(f"\n[DM sup test, risk-bucket covariance]  p = {p_val:.4f}")
+    print(f"\n[DM sup test]  sup|Gamma_n| = {result.abs_sup_Gamma_n:.4f}  "
+          f"crit = {result.crit_values:.4f}  p = {p_val:.4f}  (risk-bucket covariance)")
 
     covs = [
         CovBand(C=risk_bucket_cov, label="Risk Buckets", color="blue"),
-        CovBand(C=sigma_avg(entries), label="Conservative", color="black"),
+        CovBand(C=sigma_quarter(entries), label="Conservative", color="black"),
     ]
     df_stats = calc_L_s2(forecast_data, covs, pA="phat_A", pB="phat_B", Y="Y", grid="timestep")
     plot_pcb(df_stats, covs, grid="timestep", L="L", phat_A=args.phat_a_label,
             phat_B=args.phat_b_label, save_plot=args.save_plot)
+    if args.save_plot is not None:
+        print(f"Plot saved to: {args.save_plot}")
 
     if args.save_p_val is not None:
         with open(args.save_p_val, "w") as f:

@@ -57,15 +57,17 @@ def sigma_quarter(entries: Entries, loss_fn_linear_equiv_slope=square_loss_linea
 
 
 def sigma_risk_bucket(entries: Entries, p_est: np.ndarray):
-    """Local martingale-variance estimate using bucketed probability estimates.
+    """Martingale variance with p(1-p) estimated from risk buckets.
 
     Args:
-        p_est: (n_games, T) local estimate of p(t) (e.g. from risk-bucket
-            clustering on observed covariates, see ``risk_buckets.py``).
+        p_est: (n_games, T) local estimate of p(t)(1-p(t)) -- already the
+            variance, not p itself (see ``Bucketer.add_to_v``), so it is
+            bounded by 1/4.
 
-    C[m, :m]  += (sqrt(p_est[:,m]) * X_centered).T @ X_centered restricted to
-    the block where max(s,t) = m; equivalent to ``sigma_true_v2`` but built
-    from an empirically bucketed p(t) instead of a closed-form/proxy one.
+    Same estimator as ``sigma_true_v2``, with the bucketed p(1-p) in place of
+    a supplied path: C[i,j] = mean(delta_i * delta_j * p(1-p)(t_max)), where
+    t_max = max(i, j). Substituting the bound p(1-p) -> 1/4 recovers
+    ``sigma_quarter``.
     """
     X = entries.p_A - entries.p_B
     n_games, n_timesteps = X.shape
@@ -80,7 +82,7 @@ def sigma_risk_bucket(entries: Entries, p_est: np.ndarray):
         C[:m, m] += G[:m, m]
         C[m, m] += G[m, m]
 
-    return C * (4.0 / n_games)
+    return C / n_games
 
 
 def sigma_true_v2(entries: Entries, loss_fn_linear_equiv_slope=square_loss_linear_slope):

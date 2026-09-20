@@ -135,8 +135,6 @@ def create_buckets(
             *args,
             **kwargs
         )
-        print("V: ", bucketer.v)
-        print(f"Created bucket for timestep range {start}, {end}")
         container.add_bucket_interval(start, end, bucketer)
 
     return container
