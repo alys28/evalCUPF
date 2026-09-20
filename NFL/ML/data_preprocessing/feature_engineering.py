@@ -218,6 +218,25 @@ def add_distance_signed(df):
     return df
 
 
+def add_ezS(df):
+    '''
+    Adds EzS: 100 - end.yardsToEndzone when home has possession,
+    end.yardsToEndzone - 100 when away has possession.
+    Ranges from -100 to 100; large positive values favor the home team,
+    large negative values favor the away team.
+    Skips the first row (header row).
+    '''
+    ez_s = [None]  # None for header row
+    home_team_id = df.iloc[0]["home_team_id"]
+    for idx in range(1, len(df)):
+        row = df.iloc[idx]
+        yards = row['end.yardsToEndzone']
+        home_has_possession = row['start.team.id'] == home_team_id
+        ez_s.append(100 - yards if home_has_possession else yards - 100)
+    df['ezS'] = ez_s
+    return df
+
+
 def add_field_position_shift(df):
     '''
     How much the play was moved (field_position_shift = end.yardsToEndzone - start.yardsToEndzone)
@@ -242,6 +261,7 @@ def process_df(df, team_dict):
     df = add_time_left_in_seconds_for_period(df)
     df = add_field_position_shift(df)
     df = add_yards_to_endzone_signed(df)
+    df = add_ezS(df)
     df = add_down_signed(df)
     df = add_distance_signed(df)
     df = add_relative_strength(df)

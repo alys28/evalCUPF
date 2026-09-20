@@ -12,3 +12,4 @@ evalRTPF/R/NFL/ML/dataset
 *.pyc
 *.npz
 *.tsv
+.DS_Store

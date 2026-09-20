@@ -97,7 +97,7 @@ class SHAP_over_time:
 
 
 if __name__ == "__main__":
-    shap_model_dir = "shap_values/XGBoost"
+    shap_model_dir = "shap_values/LR_possession_probs_neg"
     shap_over_time = SHAP_over_time(FEATURES) 
     for file in os.listdir(shap_model_dir):
         file_dir = os.path.join(shap_model_dir, file)
@@ -106,4 +106,4 @@ if __name__ == "__main__":
         timestep = float(timestep)
         shap_over_time.add_timestep(timestep, shap_output)
     shap_over_time.normalize_timesteps()
-    shap_over_time.plot()
+    shap_over_time.plot(save_path="SHAP_plot_LR.png", show=True)
